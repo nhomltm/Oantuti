@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chiến Thuật Oẳn Tù Tì - Arena 9x9</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body class="theme-dark">
+  <!-- HEADER -->
+  <header class="app-header">
+    <div class="header-brand">
+      <div class="logo-badge">⚔️</div>
+      <div class="brand-text">
+        <h1>RPS ARENA 9×9</h1>
+        <p class="subtitle">Chiến Thuật Oẳn Tù Tì • Đấu Trường Trí Tuệ Bot</p>
+      </div>
+    </div>
+    <div class="header-actions">
+      <div class="status-indicator" id="arenaStatus">
+        <span class="status-dot"></span>
+        <span class="status-label">Sẵn sàng</span>
+      </div>
+      <button id="themeToggleBtn" class="btn btn-secondary icon-btn" title="Đổi giao diện Sáng/Tối">
+        <span id="themeIcon">☀️</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- MAIN 3-COLUMN CONTAINER -->
+  <main class="app-container">
+    <!-- LEFT PANEL: CODE EDITOR & MATCHMAKING -->
+    <aside class="panel left-panel">
+      <div class="panel-header">
+        <div class="panel-title">
+          <span class="icon">💻</span>
+          <h2>Lập Trình Bot</h2>
+        </div>
+        <span class="badge badge-primary">JS Sandbox</span>
+      </div>
+
+      <div class="panel-body">
+        <div class="form-group">
+          <label for="botNameInput">Tên Bot của bạn:</label>
+          <input type="text" id="botNameInput" class="form-control" value="CyberWarrior" placeholder="Nhập tên bot..." />
+        </div>
+
+        <div class="form-group">
+          <label for="authorInput">Tác giả:</label>
+          <input type="text" id="authorInput" class="form-control" value="Challenger" placeholder="Tên của bạn..." />
+        </div>
+
+        <div class="form-group">
+          <label for="modeSelect">Chế độ thi đấu:</label>
+          <select id="modeSelect" class="form-control">
+            <option value="arena">Đấu Trường Chung (Public Arena - Gặp Top Bot)</option>
+            <option value="private">Phòng Riêng (Private Room - Test nội bộ)</option>
+          </select>
+        </div>
+
+        <div class="form-group code-group">
+          <div class="code-header">
+            <label for="botCodeEditor">Mã nguồn thuật toán Bot:</label>
+            <div class="sample-loader">
+              <select id="sampleBotSelect" class="form-control form-control-sm">
+                <option value="guardian">Mẫu: Chiến Thuật Vừa Công Vừa Thủ</option>
+                <option value="hunter">Mẫu: Thợ Săn (Ưu tiên ăn quân)</option>
+                <option value="random">Mẫu: Đi Ngẫu Nhiên</option>
+              </select>
+              <button id="loadSampleBtn" class="btn btn-sm btn-outline" title="Tải mã nguồn mẫu">Nạp</button>
+            </div>
+          </div>
+          <div class="editor-wrapper">
+            <textarea id="botCodeEditor" class="code-editor" spellcheck="false"></textarea>
+          </div>
+          <p class="code-hint">💡 Hàm nhận vào <code>gameState</code>, trả về <code>{ from: [r,c], to: [r,c] }</code>.</p>
+        </div>
+
+        <div class="action-buttons">
+          <button id="runTournamentBtn" class="btn btn-primary btn-block btn-lg pulse-hover">
+            <span class="icon">🚀</span> Nộp & Khởi Tranh Giải Đấu
+          </button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- CENTER PANEL: 9X9 BOARD & REPLAY CONTROLS -->
+    <section class="panel center-panel">
+      <!-- MATCH BANNER -->
+      <div class="match-banner" id="matchBanner">
+        <div class="team-card team-red" id="cardRed">
+          <div class="team-flag-tag">🔴 RED (Hàng 0, Cờ [0,4])</div>
+          <div class="team-name" id="nameRed">Đang chờ...</div>
+          <div class="team-score" id="piecesRed">Quân: 6</div>
+        </div>
+        <div class="match-vs">
+          <div class="vs-badge">VS</div>
+          <div class="match-turn-label" id="turnIndicator">Turn 0 / 0</div>
+        </div>
+        <div class="team-card team-blue" id="cardBlue">
+          <div class="team-flag-tag">🔵 BLUE (Hàng 8, Cờ [8,4])</div>
+          <div class="team-name" id="nameBlue">Đang chờ...</div>
+          <div class="team-score" id="piecesBlue">Quân: 6</div>
+        </div>
+      </div>
+
+      <!-- 9X9 BOARD CONTAINER -->
+      <div class="board-wrapper">
+        <div id="boardGrid" class="board-grid">
+          <!-- 81 ô được khởi tạo 1 lần duy nhất bằng JavaScript -->
+        </div>
+      </div>
+
+      <!-- REPLAY CONTROLLER -->
+      <div class="replay-controls">
+        <div class="slider-wrapper">
+          <span class="step-label" id="lblPrevTurn">0</span>
+          <input type="range" id="turnSlider" min="0" max="0" value="0" class="turn-slider" />
+          <span class="step-label" id="lblMaxTurn">0</span>
+        </div>
+        <div class="button-row">
+          <button id="btnFirst" class="btn btn-secondary" title="Về nước đầu">⏮</button>
+          <button id="btnPrev" class="btn btn-secondary" title="Lùi 1 nước">◀</button>
+          <button id="btnPlayPause" class="btn btn-primary play-btn" title="Phát / Dừng">
+            <span id="playIcon">▶</span> Phát Replay
+          </button>
+          <button id="btnNext" class="btn btn-secondary" title="Tiến 1 nước">▶</button>
+          <button id="btnLast" class="btn btn-secondary" title="Đến nước cuối">⏭</button>
+          <div class="speed-control">
+            <label for="speedSelect">Tốc độ:</label>
+            <select id="speedSelect" class="form-control form-control-sm">
+              <option value="800">0.5x (Chậm)</option>
+              <option value="400" selected>1.0x (Chuẩn)</option>
+              <option value="150">2.5x (Nhanh)</option>
+              <option value="50">Chớp mắt</option>
+            </select>
+          </div>
+        </div>
+        <div class="move-announcer" id="moveAnnouncer">
+          Trận đấu chưa bắt đầu. Hãy nhấn <strong>"Nộp & Khởi Tranh Giải Đấu"</strong>!
+        </div>
+      </div>
+    </section>
+
+    <!-- RIGHT PANEL: LEADERBOARD & MATCHES LIST -->
+    <aside class="panel right-panel">
+      <div class="panel-header">
+        <div class="panel-title">
+          <span class="icon">🏆</span>
+          <h2>Bảng Xếp Hạng</h2>
+        </div>
+        <span class="badge badge-success" id="matchCountBadge">0 Trận</span>
+      </div>
+
+      <div class="tabs-nav">
+        <button class="tab-btn active" id="tabBtnLeaderboard">Bảng Điểm</button>
+        <button class="tab-btn" id="tabBtnMatches">Xem Lại Trận Đấu</button>
+      </div>
+
+      <div class="panel-body tab-content-body">
+        <!-- TAB 1: LEADERBOARD TABLE -->
+        <div class="tab-pane active" id="tabPaneLeaderboard">
+          <div class="table-container">
+            <table class="leaderboard-table" id="leaderboardTable">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Bot</th>
+                  <th>Tác giả</th>
+                  <th>Điểm</th>
+                  <th>T / H / B</th>
+                  <th>Lỗi</th>
+                </tr>
+              </thead>
+              <tbody id="leaderboardTbody">
+                <tr>
+                  <td colspan="6" class="empty-cell">Chưa có dữ liệu giải đấu</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="scoring-rules">
+            <small>⭐ Luật tính điểm: Thắng <strong>+3</strong> | Hòa <strong>+1</strong> | Thua <strong>0</strong>. Ưu tiên ít lỗi.</small>
+          </div>
+        </div>
+
+        <!-- TAB 2: MATCHES LIST -->
+        <div class="tab-pane" id="tabPaneMatches">
+          <div class="matches-list" id="matchesList">
+            <div class="empty-state">Chưa có trận đấu nào được diễn ra.</div>
+          </div>
+        </div>
+      </div>
+    </aside>
+  </main>
+
+  <script type="module" src="ui.js"></script>
+</body>
+</html>
