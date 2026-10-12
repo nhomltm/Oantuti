@@ -856,3 +856,70 @@ body.theme-light .code-editor {
     order: -1;
   }
 }
+
+/* ==========================================================================
+   MULTIPLAYER EXTENSIONS (ROOMS & QUEUE BATCH STATUS)
+   ========================================================================== */
+.room-selector-row {
+  display: flex;
+  gap: 8px;
+}
+
+.custom-room-row {
+  display: flex;
+  gap: 8px;
+}
+
+.queue-status-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.queue-status-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.queue-pulse {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent-gold);
+  box-shadow: 0 0 8px var(--accent-gold);
+  animation: pulse 1s infinite alternate;
+}
+
+.queue-status-card.running .queue-pulse {
+  background: var(--accent-green);
+  box-shadow: 0 0 8px var(--accent-green);
+}
+
+.queue-status-card.queued .queue-pulse {
+  background: #38bdf8;
+  box-shadow: 0 0 8px #38bdf8;
+}
+
+.queue-title {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-secondary);
+}
+
+.queue-status-desc {
+  font-size: 12px;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+}
+
+.btn-xs {
+  padding: 3px 8px;
+  font-size: 11px;
+}

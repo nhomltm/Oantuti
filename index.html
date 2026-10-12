@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Chiến Thuật Oẳn Tù Tì - Arena 9x9</title>
+  <title>Chiến Thuật Oẳn Tù Tì - Arena 9x9 Đa Người Chơi</title>
   <link rel="stylesheet" href="style.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -15,14 +15,14 @@
     <div class="header-brand">
       <div class="logo-badge">⚔️</div>
       <div class="brand-text">
-        <h1>RPS ARENA 9×9</h1>
+        <h1>RPS ARENA 9×9 MULTIPLAYER</h1>
         <p class="subtitle">Chiến Thuật Oẳn Tù Tì • Đấu Trường Trí Tuệ Bot</p>
       </div>
     </div>
     <div class="header-actions">
       <div class="status-indicator" id="arenaStatus">
         <span class="status-dot"></span>
-        <span class="status-label">Sẵn sàng</span>
+        <span class="status-label" id="statusLabel">Sẵn sàng</span>
       </div>
       <button id="themeToggleBtn" class="btn btn-secondary icon-btn" title="Đổi giao diện Sáng/Tối">
         <span id="themeIcon">☀️</span>
@@ -32,56 +32,68 @@
 
   <!-- MAIN 3-COLUMN CONTAINER -->
   <main class="app-container">
-    <!-- LEFT PANEL: CODE EDITOR & MATCHMAKING -->
+    <!-- LEFT PANEL: CODE EDITOR & ROOM SETTINGS -->
     <aside class="panel left-panel">
       <div class="panel-header">
         <div class="panel-title">
           <span class="icon">💻</span>
-          <h2>Lập Trình Bot</h2>
+          <h2>Nộp Code Bot</h2>
         </div>
-        <span class="badge badge-primary">JS Sandbox</span>
+        <span class="badge badge-primary" id="roomBadge">Phòng: PUBLIC</span>
       </div>
 
       <div class="panel-body">
         <div class="form-group">
-          <label for="botNameInput">Tên Bot của bạn:</label>
-          <input type="text" id="botNameInput" class="form-control" value="CyberWarrior" placeholder="Nhập tên bot..." />
+          <label for="playerNameInput">Tên Người Chơi (Player Name):</label>
+          <input type="text" id="playerNameInput" class="form-control" value="CyberWarrior" placeholder="Nhập tên người chơi..." />
         </div>
 
         <div class="form-group">
-          <label for="authorInput">Tác giả:</label>
-          <input type="text" id="authorInput" class="form-control" value="Challenger" placeholder="Tên của bạn..." />
+          <label for="roomTypeSelect">Chọn Phòng Đấu:</label>
+          <div class="room-selector-row">
+            <select id="roomTypeSelect" class="form-control">
+              <option value="PUBLIC">Phòng Chung (Public Arena)</option>
+              <option value="CUSTOM">Nhập Room ID Riêng...</option>
+            </select>
+            <button id="createRoomBtn" class="btn btn-sm btn-secondary" title="Tạo mã phòng riêng mới">+ Tạo Phòng</button>
+          </div>
         </div>
 
-        <div class="form-group">
-          <label for="modeSelect">Chế độ thi đấu:</label>
-          <select id="modeSelect" class="form-control">
-            <option value="arena">Đấu Trường Chung (Public Arena - Gặp Top Bot)</option>
-            <option value="private">Phòng Riêng (Private Room - Test nội bộ)</option>
-          </select>
+        <div class="form-group" id="customRoomGroup" style="display: none;">
+          <label for="customRoomInput">Mã Room ID:</label>
+          <div class="custom-room-row">
+            <input type="text" id="customRoomInput" class="form-control" placeholder="Ví dụ: ROOM_ABC123" />
+            <button id="joinRoomBtn" class="btn btn-sm btn-primary">Vào</button>
+          </div>
+        </div>
+
+        <!-- Trạng thái Hàng Đợi (Queue Status) -->
+        <div class="queue-status-card" id="queueStatusCard">
+          <div class="queue-status-header">
+            <span class="queue-pulse"></span>
+            <span class="queue-title" id="queueStatusTitle">Trạng thái Hàng Đợi (Batch)</span>
+          </div>
+          <div class="queue-status-desc" id="queueStatusDesc">Sẵn sàng nộp code vào giải đấu.</div>
         </div>
 
         <div class="form-group code-group">
           <div class="code-header">
-            <label for="botCodeEditor">Mã nguồn thuật toán Bot:</label>
+            <label for="botCodeEditor">Thuật Toán Bot:</label>
             <div class="sample-loader">
-              <select id="sampleBotSelect" class="form-control form-control-sm">
-                <option value="guardian">Mẫu: Chiến Thuật Vừa Công Vừa Thủ</option>
-                <option value="hunter">Mẫu: Thợ Săn (Ưu tiên ăn quân)</option>
-                <option value="random">Mẫu: Đi Ngẫu Nhiên</option>
-              </select>
-              <button id="loadSampleBtn" class="btn btn-sm btn-outline" title="Tải mã nguồn mẫu">Nạp</button>
+              <button id="btnSampleRandom" class="btn btn-xs btn-outline" title="Nạp bot Random">Random</button>
+              <button id="btnSampleHunter" class="btn btn-xs btn-outline" title="Nạp bot Thợ Săn">Hunter</button>
+              <button id="btnSampleRusher" class="btn btn-xs btn-outline" title="Nạp bot Rusher tấn công">Rusher</button>
             </div>
           </div>
           <div class="editor-wrapper">
             <textarea id="botCodeEditor" class="code-editor" spellcheck="false"></textarea>
           </div>
-          <p class="code-hint">💡 Hàm nhận vào <code>gameState</code>, trả về <code>{ from: [r,c], to: [r,c] }</code>.</p>
+          <p class="code-hint">💡 Bot nhận <code>gameState</code>, trả về <code>{ from: [r,c], to: [r,c] }</code>.</p>
         </div>
 
         <div class="action-buttons">
-          <button id="runTournamentBtn" class="btn btn-primary btn-block btn-lg pulse-hover">
-            <span class="icon">🚀</span> Nộp & Khởi Tranh Giải Đấu
+          <button id="submitBotBtn" class="btn btn-primary btn-block btn-lg pulse-hover">
+            <span class="icon">🚀</span> Nộp / Cập Nhật Code Bot
           </button>
         </div>
       </div>
@@ -92,7 +104,7 @@
       <!-- MATCH BANNER -->
       <div class="match-banner" id="matchBanner">
         <div class="team-card team-red" id="cardRed">
-          <div class="team-flag-tag">🔴 RED (Hàng 0, Cờ [0,4])</div>
+          <div class="team-flag-tag">🔴 RED (Cờ [0,4])</div>
           <div class="team-name" id="nameRed">Đang chờ...</div>
           <div class="team-score" id="piecesRed">Quân: 6</div>
         </div>
@@ -101,7 +113,7 @@
           <div class="match-turn-label" id="turnIndicator">Turn 0 / 0</div>
         </div>
         <div class="team-card team-blue" id="cardBlue">
-          <div class="team-flag-tag">🔵 BLUE (Hàng 8, Cờ [8,4])</div>
+          <div class="team-flag-tag">🔵 BLUE (Cờ [8,4])</div>
           <div class="team-name" id="nameBlue">Đang chờ...</div>
           <div class="team-score" id="piecesBlue">Quân: 6</div>
         </div>
@@ -110,7 +122,7 @@
       <!-- 9X9 BOARD CONTAINER -->
       <div class="board-wrapper">
         <div id="boardGrid" class="board-grid">
-          <!-- 81 ô được khởi tạo 1 lần duy nhất bằng JavaScript -->
+          <!-- 81 ô được tạo 1 lần duy nhất trong DOM, tối ưu 60fps -->
         </div>
       </div>
 
@@ -122,15 +134,15 @@
           <span class="step-label" id="lblMaxTurn">0</span>
         </div>
         <div class="button-row">
-          <button id="btnFirst" class="btn btn-secondary" title="Về nước đầu">⏮</button>
-          <button id="btnPrev" class="btn btn-secondary" title="Lùi 1 nước">◀</button>
+          <button id="btnFirst" class="btn btn-secondary" title="Về đầu">⏮</button>
+          <button id="btnPrev" class="btn btn-secondary" title="Lùi 1 bước">◀</button>
           <button id="btnPlayPause" class="btn btn-primary play-btn" title="Phát / Dừng">
-            <span id="playIcon">▶</span> Phát Replay
+            <span id="playIcon">▶</span> Play Replay
           </button>
-          <button id="btnNext" class="btn btn-secondary" title="Tiến 1 nước">▶</button>
-          <button id="btnLast" class="btn btn-secondary" title="Đến nước cuối">⏭</button>
+          <button id="btnNext" class="btn btn-secondary" title="Tiến 1 bước">▶</button>
+          <button id="btnLast" class="btn btn-secondary" title="Đến cuối">⏭</button>
           <div class="speed-control">
-            <label for="speedSelect">Tốc độ:</label>
+            <label for="speedSelect">Speed:</label>
             <select id="speedSelect" class="form-control form-control-sm">
               <option value="800">0.5x (Chậm)</option>
               <option value="400" selected>1.0x (Chuẩn)</option>
@@ -140,28 +152,28 @@
           </div>
         </div>
         <div class="move-announcer" id="moveAnnouncer">
-          Trận đấu chưa bắt đầu. Hãy nhấn <strong>"Nộp & Khởi Tranh Giải Đấu"</strong>!
+          Trận đấu chưa nạp. Nhấn <strong>"Xem Replay"</strong> ở bảng bên phải để phát trận đấu!
         </div>
       </div>
     </section>
 
-    <!-- RIGHT PANEL: LEADERBOARD & MATCHES LIST -->
+    <!-- RIGHT PANEL: LIVE LEADERBOARD & RECENT MATCHES -->
     <aside class="panel right-panel">
       <div class="panel-header">
         <div class="panel-title">
           <span class="icon">🏆</span>
-          <h2>Bảng Xếp Hạng</h2>
+          <h2>Bảng Xếp Hạng Trực Tiếp</h2>
         </div>
-        <span class="badge badge-success" id="matchCountBadge">0 Trận</span>
+        <button id="refreshLbBtn" class="btn btn-sm btn-outline" title="Làm mới Bảng xếp hạng">🔄</button>
       </div>
 
       <div class="tabs-nav">
-        <button class="tab-btn active" id="tabBtnLeaderboard">Bảng Điểm</button>
-        <button class="tab-btn" id="tabBtnMatches">Xem Lại Trận Đấu</button>
+        <button class="tab-btn active" id="tabBtnLeaderboard">Top Bot</button>
+        <button class="tab-btn" id="tabBtnMatches">Trận Gần Đây</button>
       </div>
 
       <div class="panel-body tab-content-body">
-        <!-- TAB 1: LEADERBOARD TABLE -->
+        <!-- TAB 1: LIVE LEADERBOARD -->
         <div class="tab-pane active" id="tabPaneLeaderboard">
           <div class="table-container">
             <table class="leaderboard-table" id="leaderboardTable">
@@ -171,26 +183,27 @@
                   <th>Bot</th>
                   <th>Tác giả</th>
                   <th>Điểm</th>
-                  <th>T / H / B</th>
+                  <th>T/H/B</th>
                   <th>Lỗi</th>
+                  <th>Hành động</th>
                 </tr>
               </thead>
               <tbody id="leaderboardTbody">
                 <tr>
-                  <td colspan="6" class="empty-cell">Chưa có dữ liệu giải đấu</td>
+                  <td colspan="7" class="empty-cell">Đang tải bảng xếp hạng...</td>
                 </tr>
               </tbody>
             </table>
           </div>
           <div class="scoring-rules">
-            <small>⭐ Luật tính điểm: Thắng <strong>+3</strong> | Hòa <strong>+1</strong> | Thua <strong>0</strong>. Ưu tiên ít lỗi.</small>
+            <small>⭐ Thắng: <strong>+3</strong> | Hòa: <strong>+1</strong> | Thua: <strong>0</strong>. Mỗi batch giải đấu tối đa 10 bot.</small>
           </div>
         </div>
 
-        <!-- TAB 2: MATCHES LIST -->
+        <!-- TAB 2: RECENT MATCHES LIST -->
         <div class="tab-pane" id="tabPaneMatches">
           <div class="matches-list" id="matchesList">
-            <div class="empty-state">Chưa có trận đấu nào được diễn ra.</div>
+            <div class="empty-state">Đang tải danh sách trận đấu...</div>
           </div>
         </div>
       </div>

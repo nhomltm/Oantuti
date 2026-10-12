@@ -428,3 +428,50 @@ export default {
   HUNTER_BOT_CODE,
   GUARDIAN_AND_STRIKER_BOT_CODE
 };
+// Thêm code mẫu RusherBot (Bot tấn công dồn dập vào cờ đối thủ)
+export const RUSHER_BOT_CODE = `
+function bot(gameState) {
+  const { board, myFlag, enemyFlag, legalMoves } = gameState;
+  if (!legalMoves || legalMoves.length === 0) return null;
+
+  function dist(p1, p2) {
+    return Math.max(Math.abs(p1[0] - p2[0]), Math.abs(p1[1] - p2[1]));
+  }
+
+  // 1. Chiếm cờ trực tiếp nếu có cơ hội
+  for (let i = 0; i < legalMoves.length; i++) {
+    const m = legalMoves[i];
+    if (m.to[0] === enemyFlag[0] && m.to[1] === enemyFlag[1]) {
+      return m;
+    }
+  }
+
+  // 2. Nếu có nước ăn quân trên đường tiến tới cờ đối phương -> Ăn ngay
+  const captureMoves = [];
+  for (let i = 0; i < legalMoves.length; i++) {
+    const m = legalMoves[i];
+    if (board[m.to[0]][m.to[1]]) {
+      captureMoves.push(m);
+    }
+  }
+  if (captureMoves.length > 0) {
+    captureMoves.sort((a, b) => dist(a.to, enemyFlag) - dist(b.to, enemyFlag));
+    return captureMoves[0];
+  }
+
+  // 3. Tiến công tối đa về phía cờ đối phương (Rusher Style)
+  let bestMove = legalMoves[0];
+  let minEnemyDist = 999;
+  for (let i = 0; i < legalMoves.length; i++) {
+    const m = legalMoves[i];
+    const d = dist(m.to, enemyFlag);
+    if (d < minEnemyDist) {
+      minEnemyDist = d;
+      bestMove = m;
+    }
+  }
+
+  return bestMove;
+}
+return bot(gameState);
+`.trim();

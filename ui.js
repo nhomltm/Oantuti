@@ -1,48 +1,52 @@
 /**
  * ui.js
  * 
- * QUẢN LÝ GIAO DIỆN & ĐIỀU KHIỂN REPLAY CHO RPS ARENA 9X9
+ * CLIENT APPLICATION CHO ĐẤU TRƯỜNG BOT OẰN TÙ TÌ 9X9 ĐA NGƯỜI CHƠI
  * 
- * Các nguyên lý thiết kế:
- * 1. Hiệu năng Replay (Chống chớp nháy):
- *    - Khởi tạo 81 ô cờ DOM duy nhất 1 lần khi load trang.
- *    - Hàm `renderBoard(boardState, lastMove)`: Chỉ cập nhật class & textContent của các ô bị thay đổi,
- *      tuyệt đối KHÔNG innerHTML lại toàn bộ table/grid để đạt chuẩn 60fps.
- *    - Highlight nhẹ ô `from` và `to` của nước đi vừa thực hiện.
+ * Tính năng chính:
+ * 1. Nộp / Cập nhật Code Bot:
+ *    - Gửi API POST /api/bot/submit
+ *    - Lưu thông tin người chơi & chọn phòng (PUBLIC hoặc Custom RoomId)
+ *    - Nạp code mẫu: Random, Hunter, Rusher
+ *    - Hiển thị Live Queue Status: "Đang chờ xếp trận (Batch)", "Đang thi đấu...", "Đã cập nhật kết quả"
  * 
- * 2. Kết nối trực tiếp với:
- *    - boardEngine.js (Bàn cờ, Cờ, Luật chơi)
- *    - botRunner.js (Mẫu Bot, Sandbox runner)
- *    - tournamentEngine.js (Giải đấu, Phòng riêng, Đấu trường chung)
+ * 2. Bảng Xếp Hạng Trực Tiếp (Live Leaderboard):
+ *    - Tự động Polling định kỳ mỗi 2 giây từ GET /api/leaderboard?roomId=...
+ *    - Nút "Xem Replay" trên từng hàng bot hoặc trong danh sách trận gần đây
+ * 
+ * 3. Bàn cờ 9x9 & Visualizer Replay 60fps (Chống chớp nháy):
+ *    - Khởi tạo 81 ô một lần duy nhất, diff-based update.
+ *    - Cờ Red tại [0,4], cờ Blue tại [8,4].
+ *    - Điều khiển Replay: Play/Pause, Next/Prev step, thanh trượt speed và turn slider.
+ *    - Thông báo nước đi, quân bị ăn, người chiến thắng rõ ràng.
  */
 
 import { initBoard, PLAYER, PIECE_TYPE, countPieces } from './boardEngine.js';
 import { 
-  RandomBot, 
-  HunterBot, 
-  GuardianAndStrikerBot,
   RANDOM_BOT_CODE, 
   HUNTER_BOT_CODE, 
-  GUARDIAN_AND_STRIKER_BOT_CODE 
+  RUSHER_BOT_CODE 
 } from './botRunner.js';
-import { runTournament, PrivateRoom, PublicArena } from './tournamentEngine.js';
 
 // ============================================================================
-// STATE QUẢN LÝ ỨNG DỤNG
+// STATE QUẢN LÝ ỨNG DỤNG CLIENT
 // ============================================================================
 const AppState = {
+  currentRoomId: 'PUBLIC',
+  playerId: `player_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
   currentMatch: null,         // Object match đang được Replay
-  allMatches: [],             // Danh sách tất cả các trận trong giải đấu
   currentTurnIndex: 0,        // Turn hiện tại đang hiển thị
   isPlaying: false,           // Trạng thái tự động chạy Replay
   playbackTimer: null,        // Timer interval của playback
   speedMs: 400,               // Tốc độ replay (ms/turn)
   theme: 'dark',              // 'dark' | 'light'
   cellElements: [],           // Mảng tham chiếu 81 ô DOM [r][c]
-  cellDataCache: []           // Cache trạng thái ô cờ để diff render (60fps)
+  cellDataCache: [],          // Cache trạng thái ô cờ để diff render (60fps)
+  pollingInterval: null,      // Polling timer cập nhật Leaderboard
+  lastQueueStatus: ''         // Trạng thái hàng đợi
 };
 
-// Icon biểu diễn quân cờ
+// Biểu tượng quân cờ
 const PIECE_ICONS = {
   [PIECE_TYPE.ROCK]: '✊',      // Búa
   [PIECE_TYPE.PAPER]: '✋',     // Bao
@@ -56,7 +60,7 @@ const PIECE_LABELS = {
 };
 
 // ============================================================================
-// KHỞI TẠO BÀN CỜ 81 Ô (MỘT LẦN DUY NHẤT)
+// KHỞI TẠO BÀN CỜ 81 Ô (MỘT LẦN DUY NHẤT - TỐI ƯU HIỆU NĂNG)
 // ============================================================================
 function initBoardDOM() {
   const gridContainer = document.getElementById('boardGrid');
@@ -74,7 +78,7 @@ function initBoardDOM() {
       cell.dataset.row = r;
       cell.dataset.col = c;
 
-      // Đánh dấu ô cờ đặc biệt: RED [0,4], BLUE [8,4]
+      // Cờ Red [0,4], Cờ Blue [8,4]
       if (r === 0 && c === 4) {
         cell.classList.add('flag-red');
         const flagMarker = document.createElement('span');
@@ -116,15 +120,14 @@ function renderBoard(grid, lastMove = null) {
       const owner = cellData ? cellData.owner : null;
       const type = cellData ? cellData.type : null;
 
-      // Kiểm tra có thay đổi so với cache không (Diffing)
       const isStateChanged = cached.owner !== owner || cached.type !== type;
       const isHighlightChanged = cached.isFrom !== isFrom || cached.isTo !== isTo;
 
       if (!isStateChanged && !isHighlightChanged) {
-        continue; // Bỏ qua nếu ô không hề thay đổi
+        continue;
       }
 
-      // 1. Cập nhật Highlights
+      // Highlight nước đi vừa qua
       if (isHighlightChanged) {
         if (isFrom) cellEl.classList.add('move-from');
         else cellEl.classList.remove('move-from');
@@ -136,18 +139,16 @@ function renderBoard(grid, lastMove = null) {
         cached.isTo = isTo;
       }
 
-      // 2. Cập nhật Quân cờ (Piece element)
+      // Cập nhật quân cờ
       if (isStateChanged) {
         cached.owner = owner;
         cached.type = type;
 
-        // Xóa quân cũ nếu có
         const oldPiece = cellEl.querySelector('.piece');
         if (oldPiece) {
           cellEl.removeChild(oldPiece);
         }
 
-        // Tạo quân mới nếu ô có quân
         if (cellData) {
           const pieceDiv = document.createElement('div');
           pieceDiv.className = `piece ${cellData.owner === PLAYER.RED ? 'piece-red' : 'piece-blue'}`;
@@ -172,16 +173,15 @@ function renderBoard(grid, lastMove = null) {
 }
 
 // ============================================================================
-// CẬP NHẬT GIAO DIỆN KHUNG REPLAY & THỐNG KÊ
+// ĐIỀU KHIỂN & CẬP NHẬT REPLAY VISUALIZER
 // ============================================================================
 function updateReplayUI() {
   const match = AppState.currentMatch;
   if (!match) return;
 
-  const totalTurns = match.turns.length;
+  const totalTurns = match.turns ? match.turns.length : 0;
   const turnIndex = AppState.currentTurnIndex;
 
-  // Cập nhật Slider & Labels
   const slider = document.getElementById('turnSlider');
   slider.max = totalTurns;
   slider.value = turnIndex;
@@ -190,10 +190,9 @@ function updateReplayUI() {
   document.getElementById('lblMaxTurn').innerText = totalTurns.toString();
   document.getElementById('turnIndicator').innerText = `Turn ${turnIndex} / ${totalTurns}`;
 
-  // Lấy board state tại turn hiện tại
-  let currentBoard = match.initialBoard;
+  let currentBoard = match.initialBoard || initBoard().grid;
   let lastMove = null;
-  let announcerText = `Trận đấu bắt đầu: ${match.botRed.name} (RED) vs ${match.botBlue.name} (BLUE)`;
+  let announcerText = `Trận đấu: ${match.botRed.name} (🔴 RED) vs ${match.botBlue.name} (🔵 BLUE)`;
 
   if (turnIndex > 0 && turnIndex <= totalTurns) {
     const currentStep = match.turns[turnIndex - 1];
@@ -205,12 +204,11 @@ function updateReplayUI() {
     const captureNotice = currentStep.captured 
       ? ` ⚡ ĂN QUÂN ${currentStep.captured.type} (${currentStep.captured.owner})!` 
       : '';
-    const errNotice = currentStep.isError ? ` ⚠️ (Fallback: ${currentStep.errorMsg})` : '';
+    const errNotice = currentStep.isError ? ` ⚠️ (Lỗi: ${currentStep.errorMsg})` : '';
 
     announcerText = `Nước ${turnIndex}: ${playerColor} đi ${moveCoord}${captureNotice}${errNotice}`;
   }
 
-  // Kết thúc trận
   if (turnIndex === totalTurns && totalTurns > 0) {
     let winMsg = '';
     if (match.winner === 'DRAW') {
@@ -224,23 +222,17 @@ function updateReplayUI() {
 
   document.getElementById('moveAnnouncer').innerText = announcerText;
 
-  // Cập nhật số quân hiện tại
   const counts = countPieces(currentBoard);
   document.getElementById('piecesRed').innerText = `Quân: ${counts[PLAYER.RED]}`;
   document.getElementById('piecesBlue').innerText = `Quân: ${counts[PLAYER.BLUE]}`;
 
-  // Render bàn cờ
   renderBoard(currentBoard, lastMove);
 }
 
-// ============================================================================
-// ĐIỀU KHIỂN PLAYBACK (PLAY / PAUSE / STEP)
-// ============================================================================
 function playReplay() {
   if (!AppState.currentMatch) return;
   if (AppState.isPlaying) return;
 
-  // Nếu đang ở cuối trận, quay lại từ đầu
   if (AppState.currentTurnIndex >= AppState.currentMatch.turns.length) {
     AppState.currentTurnIndex = 0;
   }
@@ -281,36 +273,84 @@ function seekToTurn(turn) {
   updateReplayUI();
 }
 
-// ============================================================================
-// CHỌN & XEM TRẬN ĐẤU (SET CURRENT MATCH)
-// ============================================================================
-function selectMatch(match) {
-  pauseReplay();
-  AppState.currentMatch = match;
-  AppState.currentTurnIndex = 0;
+// Tải chi tiết trận đấu từ API và nạp vào Replay Visualizer
+async function loadAndPlayMatch(matchId) {
+  try {
+    const res = await fetch(`/api/matches/${matchId}`);
+    const data = await res.json();
+    if (!data.success || !data.match) {
+      alert('Không tìm thấy thông tin trận đấu này.');
+      return;
+    }
 
-  // Cập nhật Banner tên bot
-  document.getElementById('nameRed').innerText = match.botRed.name;
-  document.getElementById('nameBlue').innerText = match.botBlue.name;
+    pauseReplay();
+    AppState.currentMatch = data.match;
+    AppState.currentTurnIndex = 0;
 
-  // Đổi active item trong danh sách trận đấu
-  document.querySelectorAll('.match-item').forEach(el => {
-    if (el.dataset.matchId === match.id) el.classList.add('active');
-    else el.classList.remove('active');
-  });
+    document.getElementById('nameRed').innerText = data.match.botRed.name;
+    document.getElementById('nameBlue').innerText = data.match.botBlue.name;
 
-  updateReplayUI();
+    updateReplayUI();
+    playReplay();
+  } catch (err) {
+    console.error('Lỗi khi tải trận đấu:', err);
+  }
 }
 
 // ============================================================================
-// CẬP NHẬT BẢNG XẾP HẠNG & DANH SÁCH TRẬN ĐẤU
+// KẾT NỐI API SERVER & CẬP NHẬT TRỰC TIẾP (LIVE LEADERBOARD & QUEUE)
 // ============================================================================
-function updateLeaderboardUI(leaderboard) {
+
+// Cập nhật trạng thái hàng đợi Batch trên giao diện
+function updateQueueCard(isBatchRunning, queueLength) {
+  const card = document.getElementById('queueStatusCard');
+  const title = document.getElementById('queueStatusTitle');
+  const desc = document.getElementById('queueStatusDesc');
+  const statusLabel = document.getElementById('statusLabel');
+
+  card.classList.remove('running', 'queued');
+
+  if (isBatchRunning) {
+    card.classList.add('running');
+    title.innerText = 'Đang Thi Đấu (Batch Running)...';
+    desc.innerText = `Đang mô phỏng các cặp đấu trong batch... (Hàng đợi còn: ${queueLength} bot)`;
+    statusLabel.innerText = 'Đang thi đấu...';
+  } else if (queueLength > 0) {
+    card.classList.add('queued');
+    title.innerText = 'Đang Chờ Xếp Trận (Batch)';
+    desc.innerText = `Có ${queueLength} bot trong hàng đợi chờ chạy batch kế tiếp...`;
+    statusLabel.innerText = 'Chờ xếp trận';
+  } else {
+    title.innerText = 'Đã Cập Nhật Kết Quả';
+    desc.innerText = 'Hàng đợi trống. Các trận đấu của đợt này đã hoàn tất!';
+    statusLabel.innerText = 'Sẵn sàng';
+  }
+}
+
+// Lấy Bảng xếp hạng và các trận đấu gần đây từ server
+async function fetchLeaderboard() {
+  try {
+    const res = await fetch(`/api/leaderboard?roomId=${AppState.currentRoomId}`);
+    if (!res.ok) return;
+
+    const data = await res.json();
+    if (!data.success) return;
+
+    updateQueueCard(data.isBatchRunning, data.queueLength);
+    renderLeaderboardTable(data.leaderboard, data.recentMatches);
+    renderRecentMatchesList(data.recentMatches);
+  } catch (err) {
+    console.error('Lỗi khi fetch leaderboard:', err);
+  }
+}
+
+// Render Bảng điểm Leaderboard
+function renderLeaderboardTable(leaderboard, recentMatches = []) {
   const tbody = document.getElementById('leaderboardTbody');
   tbody.innerHTML = '';
 
   if (!leaderboard || leaderboard.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="6" class="empty-cell">Chưa có kết quả</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="7" class="empty-cell">Chưa có bot nào trong phòng này</td></tr>`;
     return;
   }
 
@@ -322,6 +362,9 @@ function updateLeaderboardUI(leaderboard) {
     else if (index === 1) rankBadge = `<span class="rank-badge rank-2">🥈</span>`;
     else if (index === 2) rankBadge = `<span class="rank-badge rank-3">🥉</span>`;
 
+    // Tìm trận gần nhất có bot này tham gia để gắn nút xem replay
+    const botMatch = recentMatches.find(m => m.botRed.id === item.botId || m.botBlue.id === item.botId);
+
     tr.innerHTML = `
       <td>${rankBadge}</td>
       <td><strong>${item.botName}</strong></td>
@@ -329,19 +372,28 @@ function updateLeaderboardUI(leaderboard) {
       <td><strong style="color: var(--accent-gold);">${item.score}</strong></td>
       <td>${item.wins}/${item.draws}/${item.losses}</td>
       <td class="${item.errors > 0 ? 'error-badge' : ''}">${item.errors}</td>
+      <td>
+        ${botMatch ? `<button class="btn btn-xs btn-outline btn-watch-match" data-match-id="${botMatch.id}">Xem Replay ▶</button>` : `<span style="color:var(--text-muted)">-</span>`}
+      </td>
     `;
     tbody.appendChild(tr);
   });
+
+  // Gắn sự kiện xem trận đấu
+  tbody.querySelectorAll('.btn-watch-match').forEach(btn => {
+    btn.addEventListener('click', () => {
+      loadAndPlayMatch(btn.dataset.matchId);
+    });
+  });
 }
 
-function updateMatchesListUI(matches) {
+// Render Danh sách các trận gần đây
+function renderRecentMatchesList(matches) {
   const container = document.getElementById('matchesList');
   container.innerHTML = '';
 
-  document.getElementById('matchCountBadge').innerText = `${matches.length} Trận`;
-
   if (!matches || matches.length === 0) {
-    container.innerHTML = `<div class="empty-state">Chưa có trận đấu nào.</div>`;
+    container.innerHTML = `<div class="empty-state">Chưa có trận đấu nào được lưu.</div>`;
     return;
   }
 
@@ -363,116 +415,140 @@ function updateMatchesListUI(matches) {
     `;
 
     item.addEventListener('click', () => {
-      selectMatch(m);
+      loadAndPlayMatch(m.id);
     });
 
     container.appendChild(item);
   });
 }
 
-// ============================================================================
-// NỘP BOT VÀ KHỞI TRANH GIẢI ĐẤU
-// ============================================================================
-function handleRunTournament() {
-  const botName = document.getElementById('botNameInput').value.trim() || 'MyBot';
-  const author = document.getElementById('authorInput').value.trim() || 'Anonymous';
-  const botCode = document.getElementById('botCodeEditor').value;
-  const mode = document.getElementById('modeSelect').value;
+// Nộp / Cập nhật code bot lên Server
+async function handleSubmitBot() {
+  const playerName = document.getElementById('playerNameInput').value.trim() || 'Player';
+  const botCode = document.getElementById('botCodeEditor').value.trim();
 
-  const statusLabel = document.querySelector('#arenaStatus .status-label');
-  statusLabel.innerText = 'Đang thi đấu...';
+  if (!botCode) {
+    alert('Vui lòng không để trống mã nguồn bot!');
+    return;
+  }
 
-  const userBot = {
-    id: `user_bot_${Date.now()}`,
-    name: botName,
-    author: author,
-    code: botCode
-  };
+  const submitBtn = document.getElementById('submitBotBtn');
+  submitBtn.disabled = true;
+  submitBtn.innerText = 'Đang gửi lên server...';
 
-  // Chuẩn bị danh sách đối thủ bot mẫu tiêu chuẩn
-  const defaultBots = [
-    { id: 'bot_guardian_ai', name: 'GrandGuardian AI', author: 'Champion', code: GUARDIAN_AND_STRIKER_BOT_CODE },
-    { id: 'bot_hunter_ai', name: 'Predator Hunter', author: 'RPS Master', code: HUNTER_BOT_CODE },
-    { id: 'bot_random_ai', name: 'Rookie Bot', author: 'Bot Academy', code: RANDOM_BOT_CODE }
-  ];
+  try {
+    const res = await fetch('/api/bot/submit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        playerId: AppState.playerId,
+        playerName: playerName,
+        author: playerName,
+        botCode: botCode,
+        roomId: AppState.currentRoomId
+      })
+    });
 
-  setTimeout(() => {
-    try {
-      let tournamentResult;
-
-      if (mode === 'arena') {
-        // Chế độ Public Arena
-        const arena = new PublicArena();
-        arena.submitBot(userBot);
-        defaultBots.forEach(b => arena.submitBot(b));
-        tournamentResult = arena.runSeason();
-        AppState.allMatches = arena.matchHistory;
-      } else {
-        // Chế độ Phòng Riêng (Private Room)
-        const room = new PrivateRoom('VIP_ARENA_1');
-        room.addBot(userBot);
-        defaultBots.forEach(b => room.addBot(b));
-        tournamentResult = room.startTournament();
-        AppState.allMatches = tournamentResult.matches;
-      }
-
-      // Cập nhật giao diện Bảng điểm & Trận đấu
-      updateLeaderboardUI(tournamentResult.leaderboard);
-      updateMatchesListUI(AppState.allMatches);
-
-      // Tự động phát trận đấu đầu tiên có mặt bot của người chơi
-      const userMatch = AppState.allMatches.find(
-        m => m.botRed.id === userBot.id || m.botBlue.id === userBot.id
-      ) || AppState.allMatches[0];
-
-      if (userMatch) {
-        selectMatch(userMatch);
-      }
-
-      statusLabel.innerText = 'Đã xong giải đấu';
-    } catch (err) {
-      console.error(err);
-      alert('Có lỗi khi khởi tranh giải đấu: ' + err.message);
-      statusLabel.innerText = 'Lỗi!';
+    const data = await res.json();
+    if (data.success) {
+      updateQueueCard(false, data.data.queuePosition);
+      fetchLeaderboard();
+    } else {
+      alert('Lỗi nộp bot: ' + data.error);
     }
-  }, 100);
+  } catch (err) {
+    alert('Không thể kết nối đến server: ' + err.message);
+  } finally {
+    submitBtn.disabled = false;
+    submitBtn.innerHTML = '<span class="icon">🚀</span> Nộp / Cập Nhật Code Bot';
+  }
 }
 
-// ============================================================================
-// SỰ KIỆN NẠP CODE MẪU
-// ============================================================================
-function loadSampleBotCode(sampleKey) {
+// Tạo phòng riêng mới
+async function handleCreateRoom() {
+  const roomName = prompt('Nhập tên phòng riêng của bạn:', 'Đấu Trường Anh Hào');
+  if (!roomName) return;
+
+  try {
+    const res = await fetch(`/api/room/create?name=${encodeURIComponent(roomName)}`);
+    const data = await res.json();
+    if (data.success) {
+      const newId = data.data.roomId;
+      alert(`Đã tạo phòng thành công!\nMã phòng: ${newId}\nHãy gửi mã này cho bạn bè.`);
+      
+      AppState.currentRoomId = newId;
+      document.getElementById('roomBadge').innerText = `Phòng: ${newId}`;
+      document.getElementById('roomTypeSelect').value = 'CUSTOM';
+      document.getElementById('customRoomGroup').style.display = 'flex';
+      document.getElementById('customRoomInput').value = newId;
+
+      fetchLeaderboard();
+    }
+  } catch (err) {
+    alert('Lỗi khi tạo phòng: ' + err.message);
+  }
+}
+
+// Nạp code mẫu
+function loadSampleCode(type) {
   const editor = document.getElementById('botCodeEditor');
-  if (sampleKey === 'guardian') {
-    editor.value = GUARDIAN_AND_STRIKER_BOT_CODE;
-  } else if (sampleKey === 'hunter') {
+  if (type === 'hunter') {
     editor.value = HUNTER_BOT_CODE;
+  } else if (type === 'rusher') {
+    editor.value = RUSHER_BOT_CODE;
   } else {
     editor.value = RANDOM_BOT_CODE;
   }
 }
 
 // ============================================================================
-// KHỞI CHẠY KHI TẢI TRANG (EVENT LISTENERS)
+// KHỞI ĐỘNG ỨNG DỤNG & GẮN SỰ KIỆN DOM
 // ============================================================================
 document.addEventListener('DOMContentLoaded', () => {
-  // 1. Tạo bàn cờ DOM
+  // 1. Dựng bàn cờ 81 ô 1 lần duy nhất
   initBoardDOM();
   renderBoard(initBoard().grid);
 
-  // 2. Nạp code mẫu mặc định
-  loadSampleBotCode('guardian');
+  // 2. Nạp code mẫu Rusher làm mặc định
+  loadSampleCode('rusher');
 
-  // 3. Nút Nạp code mẫu
-  document.getElementById('loadSampleBtn').addEventListener('click', () => {
-    const val = document.getElementById('sampleBotSelect').value;
-    loadSampleBotCode(val);
+  // 3. Sự kiện nút nạp mẫu
+  document.getElementById('btnSampleRandom').addEventListener('click', () => loadSampleCode('random'));
+  document.getElementById('btnSampleHunter').addEventListener('click', () => loadSampleCode('hunter'));
+  document.getElementById('btnSampleRusher').addEventListener('click', () => loadSampleCode('rusher'));
+
+  // 4. Nộp Bot
+  document.getElementById('submitBotBtn').addEventListener('click', handleSubmitBot);
+
+  // 5. Chọn / Tạo phòng
+  const roomSelect = document.getElementById('roomTypeSelect');
+  const customRoomGroup = document.getElementById('customRoomGroup');
+  const customRoomInput = document.getElementById('customRoomInput');
+
+  roomSelect.addEventListener('change', () => {
+    if (roomSelect.value === 'PUBLIC') {
+      customRoomGroup.style.display = 'none';
+      AppState.currentRoomId = 'PUBLIC';
+      document.getElementById('roomBadge').innerText = 'Phòng: PUBLIC';
+      fetchLeaderboard();
+    } else {
+      customRoomGroup.style.display = 'flex';
+    }
   });
 
-  // 4. Nút Nộp & Chạy Giải đấu
-  document.getElementById('runTournamentBtn').addEventListener('click', handleRunTournament);
+  document.getElementById('joinRoomBtn').addEventListener('click', () => {
+    const val = customRoomInput.value.trim().toUpperCase();
+    if (val) {
+      AppState.currentRoomId = val;
+      document.getElementById('roomBadge').innerText = `Phòng: ${val}`;
+      fetchLeaderboard();
+    }
+  });
 
-  // 5. Điều khiển Replay Controls
+  document.getElementById('createRoomBtn').addEventListener('click', handleCreateRoom);
+  document.getElementById('refreshLbBtn').addEventListener('click', fetchLeaderboard);
+
+  // 6. Điều khiển Replay Controls
   document.getElementById('btnPlayPause').addEventListener('click', togglePlayPause);
   document.getElementById('btnPrev').addEventListener('click', () => seekToTurn(AppState.currentTurnIndex - 1));
   document.getElementById('btnNext').addEventListener('click', () => seekToTurn(AppState.currentTurnIndex + 1));
@@ -493,7 +569,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // 6. Tabs Bảng điểm / Trận đấu
+  // 7. Tabs Bảng điểm & Trận gần đây
   const tabBtnLeaderboard = document.getElementById('tabBtnLeaderboard');
   const tabBtnMatches = document.getElementById('tabBtnMatches');
   const tabPaneLeaderboard = document.getElementById('tabPaneLeaderboard');
@@ -513,7 +589,7 @@ document.addEventListener('DOMContentLoaded', () => {
     tabPaneLeaderboard.classList.remove('active');
   });
 
-  // 7. Dark / Light Theme Toggle
+  // 8. Đổi Theme Sáng / Tối
   const themeToggleBtn = document.getElementById('themeToggleBtn');
   const themeIcon = document.getElementById('themeIcon');
   themeToggleBtn.addEventListener('click', () => {
@@ -529,4 +605,8 @@ document.addEventListener('DOMContentLoaded', () => {
       themeIcon.innerText = '☀️';
     }
   });
+
+  // 9. Bắt đầu polling Live Leaderboard mỗi 2 giây
+  fetchLeaderboard();
+  AppState.pollingInterval = setInterval(fetchLeaderboard, 2000);
 });
