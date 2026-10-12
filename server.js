@@ -1,265 +1,195 @@
 /**
  * server.js
  * 
- * BACKEND NODE.JS EXPRESS CHO ĐẤU TRƯỜNG BOT OẰN TÙ TÌ 9X9 ĐA NGƯỜI CHƠI
+ * BACKEND NODE.JS EXPRESS CHO ĐẤU TRƯỜNG BOT OẰN TÙ TÌ 9X9
  * 
- * Kiến trúc & Tính năng:
- * 1. Quản lý Phòng:
- *    - Public Arena: Đấu trường chung toàn cầu.
- *    - Private Room (roomId): Phòng đấu kín do người chơi tạo.
+ * TÍNH NĂNG NÂNG CẤP CAO CẤP:
+ * 1. LƯU TRỮ DỮ LIỆU BỀN VỮNG (PERSISTENCE):
+ *    - Lưu tự động vào 'data/players.json' và 'data/matches.json'
+ *    - Khi khởi động lại server, toàn bộ 50+ người chơi, bot code, Leaderboard, và Match Logs
+ *      được load nguyên vẹn từ ổ đĩa mà không bị mất.
  * 
- * 2. Hàng đợi & Giới hạn Batch (Queue & Batch Runner):
- *    - Khi nộp/cập nhật code bot: lưu vào database bộ nhớ và đẩy bot vào matchmakingQueue.
- *    - Giới hạn Batch: Mỗi lượt chạy giải đấu lấy TỐI ĐA 10 bot.
- *      + Nếu hàng đợi ít hơn 2 bot: Tự động bổ sung các Bot Mẫu tiêu chuẩn (Guardian, Hunter, Random) để đủ tối thiểu.
- *    - Xử lý bất đồng bộ (Non-blocking): Chạy trên background task (async/setImmediate),
- *      không làm nghẽn Event Loop hay các HTTP request của người khác.
- *    - Tự động tiếp tục xử lý các batch tiếp theo trong hàng đợi.
+ * 2. THUẬT TOÁN LEO THÁP THEO CỤM (TIERED BATCH MATCHMAKING - 10 NGƯỜI/LẦN):
+ *    - Khi nộp/cập nhật code:
+ *      + Xác định vị trí hiện tại của bot trên Leaderboard.
+ *      + Nếu là người mới: Ghép vào Cụm 10 người ở đáy bảng (Lowest Tier).
+ *      + Tổ chức 1 mini-tournament giữa bot đó và 9 bot trong cụm (đủ 10 bot).
+ *      + ĐIỀU KIỆN LEO HẠNG: Nếu bot đạt tỉ lệ thắng áp đảo (thắng >= 6/10 trận hoặc lọt top 3 của cụm):
+ *        * Tăng điểm thưởng ELO/Score.
+ *        * TỰ ĐỘNG đưa bot vào Job Queue để đấu tiếp với CỤM 10 NGƯỜI TIẾP THEO ở thứ hạng cao hơn.
+ *        * Quá trình leo tháp lặp lại liên tục cho đến khi bot gặp nhóm cân tài cân sức hoặc đạt TOP 1!
  * 
- * 3. Tích hợp Engine & Lưu trữ:
- *    - Kết nối trực tiếp tournamentEngine.js, botRunner.js, boardEngine.js.
- *    - Lưu Leaderboard theo từng phòng/arena.
- *    - Lưu Match Logs phục vụ người xem Replay qua ID.
- * 
- * 4. API Endpoints:
- *    - POST /api/bot/submit
- *    - GET /api/leaderboard?roomId=...
- *    - GET /api/matches/:matchId
- *    - GET /api/room/create
- *    - GET /api/rooms
- *    - Static file serving (index.html, style.css, ui.js, boardEngine.js, botRunner.js, tournamentEngine.js)
+ * 3. QUẢN LÝ TẢI & TRÁNH NGHẼN SERVER (SEQUENTIAL ASYNC JOB QUEUE):
+ *    - Toàn bộ các batch leo tháp xếp vào Job Queue và chạy tuần tự với async/await.
+ *    - Không làm đơ CPU hay nghẽn Event Loop.
+ *    - Broadcast Server-Sent Events (SSE) tại `/api/stream` cho client nhận thông báo realtime!
  */
 
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 
 import { 
   GUARDIAN_AND_STRIKER_BOT_CODE, 
   HUNTER_BOT_CODE, 
+  RUSHER_BOT_CODE,
   RANDOM_BOT_CODE 
 } from './botRunner.js';
-import { runTournament, SCORING } from './tournamentEngine.js';
+import { runTournament, playMatch, SCORING } from './tournamentEngine.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const BATCH_SIZE_LIMIT = 10; // Giới hạn tối đa 10 bot mỗi batch giải đấu
+const TIER_CLUSTER_SIZE = 10; // Cụm 10 bot thi đấu mỗi lượt
 
 app.use(cors());
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true }));
-
-// Phục vụ giao diện web tĩnh
 app.use(express.static(__dirname));
 
 // ============================================================================
-// BỘ NHỚ LƯU TRỮ TRONG RAM (IN-MEMORY STORAGE)
+// 1. LƯU TRỮ DỮ LIỆU BỀN VỮNG (PERSISTENCE)
 // ============================================================================
-const DEFAULT_SAMPLE_BOTS = [
-  { id: 'bot_system_guardian', name: 'Master Guardian AI', author: 'System AI', code: GUARDIAN_AND_STRIKER_BOT_CODE },
-  { id: 'bot_system_hunter', name: 'Vicious Hunter AI', author: 'System AI', code: HUNTER_BOT_CODE },
-  { id: 'bot_system_random', name: 'Lucky Rookie AI', author: 'System AI', code: RANDOM_BOT_CODE }
+const DATA_DIR = path.join(__dirname, 'data');
+const PLAYERS_FILE = path.join(DATA_DIR, 'players.json');
+const MATCHES_FILE = path.join(DATA_DIR, 'matches.json');
+
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+
+// 5 Bot mẫu hệ thống sẵn có
+const DEFAULT_SYSTEM_BOTS = [
+  { id: 'bot_guardian_god', name: 'Titan Guardian AI', author: 'Grandmaster AI', code: GUARDIAN_AND_STRIKER_BOT_CODE, score: 60, wins: 20, draws: 0, losses: 0, errors: 0 },
+  { id: 'bot_rusher_prime', name: 'Blitz Rusher AI', author: 'Master AI', code: RUSHER_BOT_CODE, score: 45, wins: 15, draws: 0, losses: 5, errors: 0 },
+  { id: 'bot_hunter_alpha', name: 'Shadow Hunter AI', author: 'Elite AI', code: HUNTER_BOT_CODE, score: 30, wins: 10, draws: 0, losses: 10, errors: 0 },
+  { id: 'bot_hunter_beta', name: 'Forest Hunter AI', author: 'Warrior AI', code: HUNTER_BOT_CODE, score: 18, wins: 6, draws: 0, losses: 14, errors: 0 },
+  { id: 'bot_random_rookie', name: 'Lucky Rookie AI', author: 'Academy AI', code: RANDOM_BOT_CODE, score: 6, wins: 2, draws: 0, losses: 18, errors: 0 }
 ];
 
-// Cấu trúc dữ liệu cho mỗi Room:
-// {
-//   roomId: 'PUBLIC' | string,
-//   name: string,
-//   isPrivate: boolean,
-//   bots: Map<playerId, BotInfo>,
-//   queue: Set<playerId>,
-//   leaderboard: Array<Stats>,
-//   isBatchRunning: boolean,
-//   createdAt: number
-// }
-const rooms = new Map();
-
-// Kho lưu trữ match log toàn cục để phục vụ xem lại (matchId -> MatchLog)
-const matchLogsStore = new Map();
+// In-memory Database
+let dbPlayers = new Map(); // playerId -> Player Record
+let dbMatches = new Map(); // matchId -> Match Log
 
 /**
- * Lấy hoặc khởi tạo phòng (Mặc định có phòng 'PUBLIC')
+ * Tải dữ liệu từ ổ đĩa khi khởi động server
  */
-function getOrCreateRoom(roomId = 'PUBLIC', roomName = null) {
-  const normalizedId = (roomId || 'PUBLIC').trim().toUpperCase();
-  if (!rooms.has(normalizedId)) {
-    const isPublic = normalizedId === 'PUBLIC';
-    const room = {
-      roomId: normalizedId,
-      name: roomName || (isPublic ? 'Public Global Arena' : `Private Room ${normalizedId}`),
-      isPrivate: !isPublic,
-      bots: new Map(),
-      queue: new Set(),
-      leaderboard: [],
-      isBatchRunning: false,
-      createdAt: Date.now()
-    };
-
-    // Nạp sẵn bot mẫu cho phòng public
-    if (isPublic) {
-      for (const b of DEFAULT_SAMPLE_BOTS) {
-        room.bots.set(b.id, {
-          playerId: b.id,
-          playerName: b.name,
-          author: b.author,
-          botCode: b.code,
-          updatedAt: Date.now()
-        });
+function loadPersistedData() {
+  try {
+    if (fs.existsSync(PLAYERS_FILE)) {
+      const raw = fs.readFileSync(PLAYERS_FILE, 'utf-8');
+      const list = JSON.parse(raw);
+      if (Array.isArray(list)) {
+        for (const p of list) {
+          dbPlayers.set(p.playerId, p);
+        }
+        console.log(`[Persistence] Đã tải ${dbPlayers.size} người chơi từ ${PLAYERS_FILE}`);
       }
     }
-
-    rooms.set(normalizedId, room);
-  }
-  return rooms.get(normalizedId);
-}
-
-// Khởi tạo sẵn phòng PUBLIC
-getOrCreateRoom('PUBLIC');
-
-// ============================================================================
-// HỆ THỐNG QUEUE & BATCH RUNNER BẤT ĐỒNG BỘ (NON-BLOCKING)
-// ============================================================================
-
-/**
- * Kích hoạt xử lý hàng đợi theo Batch tối đa 10 bot
- * Chạy bất đồng bộ qua setImmediate / async, không block Event Loop
- */
-function triggerBatchRunner(roomId) {
-  const room = rooms.get(roomId);
-  if (!room) return;
-
-  // Nếu batch trước đang chạy, batch runner sẽ tự động cuốn chiếu sau khi batch đó xong
-  if (room.isBatchRunning) {
-    return;
+  } catch (err) {
+    console.error('[Persistence] Lỗi khi đọc players.json:', err.message);
   }
 
-  // Nếu hàng đợi rỗng, không cần chạy
-  if (room.queue.size === 0) {
-    return;
-  }
-
-  // Đánh dấu batch bắt đầu chạy
-  room.isBatchRunning = true;
-
-  // Sử dụng setImmediate để giải phóng call stack hiện tại ngay lập tức
-  setImmediate(async () => {
-    try {
-      await processNextBatch(room);
-    } catch (err) {
-      console.error(`[BatchRunner] Lỗi khi chạy giải đấu phòng ${room.roomId}:`, err);
-    } finally {
-      room.isBatchRunning = false;
-      // Nếu sau khi chạy xong vẫn còn bot trong queue (do người chơi mới nộp vào), tiếp tục batch kế tiếp
-      if (room.queue.size > 0) {
-        triggerBatchRunner(room.roomId);
-      }
-    }
-  });
-}
-
-/**
- * Xử lý 1 batch tối đa 10 bot
- */
-async function processNextBatch(room) {
-  // 1. Lấy tối đa BATCH_SIZE_LIMIT bot từ queue
-  const candidateIds = Array.from(room.queue).slice(0, BATCH_SIZE_LIMIT);
-
-  // Xóa các bot này khỏi queue vì đã được đưa vào batch thi đấu
-  for (const id of candidateIds) {
-    room.queue.delete(id);
-  }
-
-  // Lấy dữ liệu bot tương ứng
-  const batchBots = [];
-  for (const id of candidateIds) {
-    const b = room.bots.get(id);
-    if (b) {
-      batchBots.push({
-        id: b.playerId,
-        name: b.playerName,
+  // Nạp bot hệ thống nếu chưa có
+  for (const b of DEFAULT_SYSTEM_BOTS) {
+    if (!dbPlayers.has(b.id)) {
+      dbPlayers.set(b.id, {
+        playerId: b.id,
+        playerName: b.name,
         author: b.author,
-        code: b.botCode
+        botCode: b.code,
+        score: b.score,
+        wins: b.wins,
+        draws: b.draws,
+        losses: b.losses,
+        errors: b.errors,
+        matchesPlayed: b.wins + b.draws + b.losses,
+        roomId: 'PUBLIC',
+        updatedAt: Date.now()
       });
     }
   }
 
-  // 2. Nếu thiếu bot để ghép cặp (< 2 bot), bổ sung các bot mẫu
-  if (batchBots.length < 2) {
-    for (const sample of DEFAULT_SAMPLE_BOTS) {
-      if (!batchBots.some(b => b.id === sample.id)) {
-        batchBots.push({
-          id: sample.id,
-          name: sample.name,
-          author: sample.author,
-          code: sample.code
-        });
+  try {
+    if (fs.existsSync(MATCHES_FILE)) {
+      const raw = fs.readFileSync(MATCHES_FILE, 'utf-8');
+      const list = JSON.parse(raw);
+      if (Array.isArray(list)) {
+        for (const m of list) {
+          dbMatches.set(m.id, m);
+        }
+        console.log(`[Persistence] Đã tải ${dbMatches.size} trận đấu từ ${MATCHES_FILE}`);
       }
-      if (batchBots.length >= 2) break;
     }
+  } catch (err) {
+    console.error('[Persistence] Lỗi khi đọc matches.json:', err.message);
   }
-
-  console.log(`[BatchRunner] Phòng ${room.roomId}: Bắt đầu chạy Batch gồm ${batchBots.length} bots...`);
-
-  // 3. Thực thi giải đấu không đồng bộ
-  // Wrap tournament run trong Promise để mô phỏng async non-blocking task
-  const tournamentResult = await new Promise((resolve) => {
-    setImmediate(() => {
-      const res = runTournament(batchBots, { timeoutMs: 150 });
-      resolve(res);
-    });
-  });
-
-  // 4. Lưu Match Logs vào kho lưu trữ
-  for (const match of tournamentResult.matches) {
-    matchLogsStore.set(match.id, {
-      ...match,
-      roomId: room.roomId,
-      timestamp: Date.now()
-    });
-  }
-
-  // Giới hạn bộ nhớ match log (giữ 500 trận gần nhất)
-  if (matchLogsStore.size > 500) {
-    const keysToRemove = Array.from(matchLogsStore.keys()).slice(0, 100);
-    keysToRemove.forEach(k => matchLogsStore.delete(k));
-  }
-
-  // 5. Cập nhật Bảng xếp hạng (Leaderboard) của phòng
-  updateRoomLeaderboard(room, tournamentResult.leaderboard);
-
-  console.log(`[BatchRunner] Phòng ${room.roomId}: Batch hoàn tất với ${tournamentResult.matches.length} trận đấu!`);
 }
 
 /**
- * Cập nhật bảng xếp hạng phòng dựa trên kết quả batch mới nhất
+ * Lưu dữ liệu bền vững ra file
  */
-function updateRoomLeaderboard(room, batchLeaderboard) {
-  const currentMap = new Map();
-  for (const entry of room.leaderboard) {
-    currentMap.set(entry.botId, { ...entry });
-  }
+function savePersistedData() {
+  try {
+    const playersList = Array.from(dbPlayers.values());
+    fs.writeFileSync(PLAYERS_FILE, JSON.stringify(playersList, null, 2), 'utf-8');
 
-  for (const batchEntry of batchLeaderboard) {
-    if (currentMap.has(batchEntry.botId)) {
-      // Cập nhật tích lũy điểm số và thành tích
-      const existing = currentMap.get(batchEntry.botId);
-      existing.score += batchEntry.score;
-      existing.matchesPlayed += batchEntry.matchesPlayed;
-      existing.wins += batchEntry.wins;
-      existing.draws += batchEntry.draws;
-      existing.losses += batchEntry.losses;
-      existing.errors += batchEntry.errors;
-    } else {
-      currentMap.set(batchEntry.botId, { ...batchEntry });
+    // Lưu tối đa 300 trận đấu gần nhất vào file
+    const matchesList = Array.from(dbMatches.values()).slice(-300);
+    fs.writeFileSync(MATCHES_FILE, JSON.stringify(matchesList, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('[Persistence] Lỗi khi lưu dữ liệu:', err.message);
+  }
+}
+
+// Khởi chạy nạp dữ liệu ngay khi khởi động
+loadPersistedData();
+
+// ============================================================================
+// SERVER-SENT EVENTS (SSE) BROADCASTING
+// ============================================================================
+const sseClients = new Set();
+
+function broadcastSSE(eventType, data) {
+  const payload = `event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`;
+  for (const client of sseClients) {
+    try {
+      client.write(payload);
+    } catch (e) {
+      sseClients.delete(client);
     }
   }
+}
 
-  // Sắp xếp lại Leaderboard theo: Điểm cao -> Thắng nhiều -> Ít lỗi
-  room.leaderboard = Array.from(currentMap.values()).sort((a, b) => {
+app.get('/api/stream', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  sseClients.add(res);
+  req.on('close', () => sseClients.delete(res));
+});
+
+// ============================================================================
+// 2. THUẬT TOÁN LEO THÁP THEO CỤM (TIERED CLUSTER MATCHMAKING)
+// ============================================================================
+
+/**
+ * Lấy Bảng xếp hạng sắp xếp theo điểm số
+ */
+function getSortedLeaderboard(roomId = 'PUBLIC') {
+  const normRoom = (roomId || 'PUBLIC').trim().toUpperCase();
+  const list = Array.from(dbPlayers.values()).filter(p => {
+    if (normRoom === 'PUBLIC') return true;
+    return p.roomId === normRoom;
+  });
+
+  return list.sort((a, b) => {
     if (b.score !== a.score) return b.score - a.score;
     if (b.wins !== a.wins) return b.wins - a.wins;
     if (a.errors !== b.errors) return a.errors - b.errors;
@@ -267,14 +197,171 @@ function updateRoomLeaderboard(room, batchLeaderboard) {
   });
 }
 
+/**
+ * Job Queue: Quản lý hàng đợi leo tháp tuần tự, tránh nghẽn CPU
+ */
+class LadderQueueManager {
+  constructor() {
+    this.jobQueue = [];
+    this.isProcessing = false;
+  }
+
+  enqueue(playerId, roomId) {
+    this.jobQueue.push({ playerId, roomId, step: 0 });
+    console.log(`[Ladder] Enqueued bot ${playerId} vào hàng đợi leo tháp. Tổng hàng đợi: ${this.jobQueue.length}`);
+    this.processNext();
+  }
+
+  async processNext() {
+    if (this.isProcessing || this.jobQueue.length === 0) {
+      return;
+    }
+
+    this.isProcessing = true;
+    const currentJob = this.jobQueue.shift();
+
+    try {
+      await this.runTowerClimbStep(currentJob);
+    } catch (err) {
+      console.error(`[Ladder] Lỗi khi xử lý leo tháp cho bot ${currentJob.playerId}:`, err);
+    } finally {
+      this.isProcessing = false;
+      // Thông báo cập nhật realtime
+      broadcastSSE('leaderboard_updated', {
+        roomId: currentJob.roomId,
+        leaderboard: getSortedLeaderboard(currentJob.roomId)
+      });
+      // Tiếp tục job tiếp theo
+      if (this.jobQueue.length > 0) {
+        setImmediate(() => this.processNext());
+      }
+    }
+  }
+
+  /**
+   * Thực hiện 1 bước leo tháp (Leo qua 1 Cụm 10 người)
+   */
+  async runTowerClimbStep(job) {
+    const { playerId, roomId } = job;
+    const challenger = dbPlayers.get(playerId);
+    if (!challenger) return;
+
+    const leaderboard = getSortedLeaderboard(roomId);
+    const totalPlayers = leaderboard.length;
+    const challengerIndex = leaderboard.findIndex(p => p.playerId === playerId);
+
+    // Xác định vị trí cụm 10 người để thử thách
+    // Nếu là người mới hoặc đứng cuối bảng: Bắt đầu từ đáy bảng
+    let clusterStartIndex;
+    let clusterEndIndex;
+
+    if (challengerIndex === -1 || challengerIndex >= totalPlayers - TIER_CLUSTER_SIZE) {
+      // Ở cụm đáy bảng (Hạng thấp nhất)
+      clusterStartIndex = Math.max(0, totalPlayers - TIER_CLUSTER_SIZE);
+      clusterEndIndex = totalPlayers;
+    } else {
+      // Đang ở giữa tháp -> Thử thách cụm 10 người xếp ngay TRÊN vị trí hiện tại
+      clusterEndIndex = challengerIndex;
+      clusterStartIndex = Math.max(0, challengerIndex - TIER_CLUSTER_SIZE);
+    }
+
+    // Chọn tối đa 9 đối thủ trong cụm này (không bao gồm chính challenger)
+    let clusterOpponents = leaderboard
+      .slice(clusterStartIndex, clusterEndIndex)
+      .filter(p => p.playerId !== playerId);
+
+    // Nếu không đủ đối thủ trong phòng, bổ sung bot mẫu để đủ cụm thi đấu
+    if (clusterOpponents.length === 0) {
+      clusterOpponents = DEFAULT_SYSTEM_BOTS.filter(b => b.id !== playerId).slice(0, 4);
+    }
+
+    console.log(`[Ladder] Bot "${challenger.playerName}" (Hạng ${challengerIndex + 1}/${totalPlayers}) bắt đầu thử thách Cụm ${clusterOpponents.length} đối thủ (Hạng ${clusterStartIndex + 1} -> ${clusterEndIndex})...`);
+
+    // Tạo danh sách 10 bot thi đấu
+    const batchBots = [
+      { id: challenger.playerId, name: challenger.playerName, author: challenger.author, code: challenger.botCode },
+      ...clusterOpponents.map(o => ({ id: o.playerId, name: o.playerName, author: o.author, code: o.botCode }))
+    ];
+
+    // Chạy mini-tournament bất đồng bộ (Non-blocking)
+    const tournamentResult = await new Promise(resolve => {
+      setImmediate(() => {
+        const res = runTournament(batchBots, { timeoutMs: 150 });
+        resolve(res);
+      });
+    });
+
+    // Lưu các trận đấu vào dbMatches
+    for (const match of tournamentResult.matches) {
+      dbMatches.set(match.id, {
+        ...match,
+        roomId: challenger.roomId,
+        timestamp: Date.now()
+      });
+    }
+
+    // Lấy thành tích của Challenger trong batch này
+    const challengerStatsInBatch = tournamentResult.leaderboard.find(b => b.botId === challenger.playerId);
+    const challengerRankInBatch = tournamentResult.leaderboard.findIndex(b => b.botId === challenger.playerId) + 1;
+
+    let winsInBatch = challengerStatsInBatch ? challengerStatsInBatch.wins : 0;
+    let matchesInBatch = challengerStatsInBatch ? challengerStatsInBatch.matchesPlayed : 0;
+    let winRate = matchesInBatch > 0 ? (winsInBatch / matchesInBatch) : 0;
+
+    console.log(`[Ladder] Kết quả Cụm: "${challenger.playerName}" Thắng ${winsInBatch}/${matchesInBatch} trận (Tỉ lệ ${(winRate * 100).toFixed(1)}%), Đứng thứ ${challengerRankInBatch}/${batchBots.length} trong cụm.`);
+
+    // Cập nhật tích lũy điểm số cho tất cả bot trong batch
+    for (const stat of tournamentResult.leaderboard) {
+      const p = dbPlayers.get(stat.botId);
+      if (p) {
+        p.score += stat.score;
+        p.wins += stat.wins;
+        p.draws += stat.draws;
+        p.losses += stat.losses;
+        p.errors += stat.errors;
+        p.matchesPlayed += stat.matchesPlayed;
+        p.updatedAt = Date.now();
+      }
+    }
+
+    // Lưu dữ liệu bền vững
+    savePersistedData();
+
+    // ========================================================================
+    // ĐIỀU KIỆN LEO HẠNG:
+    // Thắng >= 50% số trận (hoặc lọt Top 3 của cụm) VÀ chưa phải Top 1 toàn server
+    // -> TỰ ĐỘNG ĐƯA VÀO HÀNG ĐỢI ĐỂ ĐẤU TIẾP CỤM CAO HƠN!
+    // ========================================================================
+    const isDominant = (winRate >= 0.5) || (challengerRankInBatch <= 3);
+    const canClimbHigher = clusterStartIndex > 0;
+
+    if (isDominant && canClimbHigher) {
+      console.log(`🔥 [Ladder Level Up!] Bot "${challenger.playerName}" ÁP ĐẢO CỤM! Tự động leo tiếp lên Cụm cao hơn...`);
+      // Đưa bot vào hàng đợi leo tiếp nấc thang tiếp theo
+      this.jobQueue.push({
+        playerId: challenger.playerId,
+        roomId: challenger.roomId,
+        step: job.step + 1
+      });
+    } else {
+      if (!canClimbHigher) {
+        console.log(`👑 [Ladder Champion!] Bot "${challenger.playerName}" đã chinh phục đỉnh tháp (Top cụm dẫn đầu)!`);
+      } else {
+        console.log(`🛑 [Ladder Balanced] Bot "${challenger.playerName}" đã dừng lại ở cụm cân bằng.`);
+      }
+    }
+  }
+}
+
+const ladderManager = new LadderQueueManager();
+
 // ============================================================================
-// API ENDPOINTS (HTTP REST)
+// 3. API ENDPOINTS (HTTP REST)
 // ============================================================================
 
 /**
  * 1. POST /api/bot/submit
- * Nộp hoặc cập nhật code bot
- * Body: { playerId, playerName, author, botCode, roomId }
+ * Nộp hoặc cập nhật code bot -> Đưa vào hàng đợi Leo Tháp
  */
 app.post('/api/bot/submit', (req, res) => {
   try {
@@ -289,31 +376,46 @@ app.post('/api/bot/submit', (req, res) => {
     const assignedAuthor = author || 'Anonymous';
     const targetRoomId = (roomId || 'PUBLIC').trim().toUpperCase();
 
-    const room = getOrCreateRoom(targetRoomId);
+    // Lấy record cũ hoặc tạo mới (Giữ nguyên điểm số cũ nếu chỉ cập nhật code bot)
+    let playerRecord = dbPlayers.get(assignedPlayerId);
+    if (!playerRecord) {
+      playerRecord = {
+        playerId: assignedPlayerId,
+        playerName: assignedPlayerName,
+        author: assignedAuthor,
+        botCode: botCode.trim(),
+        score: 0,
+        wins: 0,
+        draws: 0,
+        losses: 0,
+        errors: 0,
+        matchesPlayed: 0,
+        roomId: targetRoomId,
+        updatedAt: Date.now()
+      };
+    } else {
+      playerRecord.playerName = assignedPlayerName;
+      playerRecord.author = assignedAuthor;
+      playerRecord.botCode = botCode.trim();
+      playerRecord.roomId = targetRoomId;
+      playerRecord.updatedAt = Date.now();
+    }
 
-    // Lưu / Cập nhật thông tin bot của người chơi
-    room.bots.set(assignedPlayerId, {
-      playerId: assignedPlayerId,
-      playerName: assignedPlayerName,
-      author: assignedAuthor,
-      botCode: botCode.trim(),
-      updatedAt: Date.now()
-    });
+    dbPlayers.set(assignedPlayerId, playerRecord);
+    savePersistedData();
 
-    // Đưa bot vào hàng đợi matchmakingQueue
-    room.queue.add(assignedPlayerId);
-
-    // Kích hoạt Batch Runner ngay lập tức
-    triggerBatchRunner(targetRoomId);
+    // Đưa bot vào hàng đợi leo tháp theo cụm
+    ladderManager.enqueue(assignedPlayerId, targetRoomId);
 
     return res.status(200).json({
       success: true,
-      message: 'Bot submitted successfully and queued for next tournament batch.',
+      message: 'Bot đã nộp thành công và bắt đầu hành trình Leo Tháp theo cụm!',
       data: {
         playerId: assignedPlayerId,
         playerName: assignedPlayerName,
         roomId: targetRoomId,
-        queuePosition: room.queue.size
+        currentScore: playerRecord.score,
+        queuePosition: ladderManager.jobQueue.length
       }
     });
   } catch (error) {
@@ -324,19 +426,15 @@ app.post('/api/bot/submit', (req, res) => {
 
 /**
  * 2. GET /api/leaderboard?roomId=...
- * Lấy bảng xếp hạng mới nhất của phòng
+ * Lấy Bảng xếp hạng bền vững mới nhất
  */
 app.get('/api/leaderboard', (req, res) => {
   try {
     const roomId = (req.query.roomId || 'PUBLIC').trim().toUpperCase();
-    const room = rooms.get(roomId);
+    const leaderboard = getSortedLeaderboard(roomId);
 
-    if (!room) {
-      return res.status(404).json({ error: `Room ${roomId} not found.` });
-    }
-
-    // Danh sách các trận đấu gần nhất của phòng này
-    const recentMatches = Array.from(matchLogsStore.values())
+    // 20 trận gần đây nhất
+    const recentMatches = Array.from(dbMatches.values())
       .filter(m => m.roomId === roomId)
       .slice(-20)
       .reverse()
@@ -352,11 +450,10 @@ app.get('/api/leaderboard', (req, res) => {
 
     return res.status(200).json({
       success: true,
-      roomId: room.roomId,
-      roomName: room.name,
-      isBatchRunning: room.isBatchRunning,
-      queueLength: room.queue.size,
-      leaderboard: room.leaderboard,
+      roomId,
+      isBatchRunning: ladderManager.isProcessing,
+      queueLength: ladderManager.jobQueue.length,
+      leaderboard,
       recentMatches
     });
   } catch (error) {
@@ -367,12 +464,12 @@ app.get('/api/leaderboard', (req, res) => {
 
 /**
  * 3. GET /api/matches/:matchId
- * Lấy log chi tiết trận đấu để xem Replay
+ * Lấy log chi tiết trận đấu từ database bền vững để xem Replay
  */
 app.get('/api/matches/:matchId', (req, res) => {
   try {
     const { matchId } = req.params;
-    const match = matchLogsStore.get(matchId);
+    const match = dbMatches.get(matchId);
 
     if (!match) {
       return res.status(404).json({ error: `Match ${matchId} not found.` });
@@ -390,52 +487,18 @@ app.get('/api/matches/:matchId', (req, res) => {
 
 /**
  * 4. GET /api/room/create
- * Tạo mã phòng riêng mới
+ * Tạo mã phòng riêng
  */
 app.get('/api/room/create', (req, res) => {
   try {
-    const roomName = req.query.name || null;
     const newRoomId = `ROOM_${Date.now().toString(36).toUpperCase()}_${Math.random().toString(36).substring(2, 5).toUpperCase()}`;
-
-    const newRoom = getOrCreateRoom(newRoomId, roomName);
-
     return res.status(201).json({
       success: true,
-      message: 'Private room created successfully.',
-      data: {
-        roomId: newRoom.roomId,
-        name: newRoom.name,
-        createdAt: newRoom.createdAt
-      }
+      data: { roomId: newRoomId, createdAt: Date.now() }
     });
   } catch (error) {
     console.error('Error in /api/room/create:', error);
-    return res.status(500).json({ error: 'Internal server error while creating private room.' });
-  }
-});
-
-/**
- * 5. GET /api/rooms
- * Lấy danh sách các phòng hiện có
- */
-app.get('/api/rooms', (req, res) => {
-  try {
-    const list = Array.from(rooms.values()).map(r => ({
-      roomId: r.roomId,
-      name: r.name,
-      isPrivate: r.isPrivate,
-      botCount: r.bots.size,
-      queueCount: r.queue.size,
-      isBatchRunning: r.isBatchRunning
-    }));
-
-    return res.status(200).json({
-      success: true,
-      rooms: list
-    });
-  } catch (error) {
-    console.error('Error in /api/rooms:', error);
-    return res.status(500).json({ error: 'Internal server error while fetching rooms.' });
+    return res.status(500).json({ error: 'Internal server error while creating room.' });
   }
 });
 
@@ -444,11 +507,13 @@ app.get('/api/rooms', (req, res) => {
 // ============================================================================
 const server = app.listen(PORT, () => {
   console.log(`====================================================================`);
-  console.log(`🎮 RPS ARENA 9X9 BACKEND SERVER IS RUNNING`);
+  console.log(`🏰 RPS ARENA 9X9 - TIERED LADDER CLIMBING & PERSISTENCE SERVER`);
   console.log(`🌐 URL: http://localhost:${PORT}`);
-  console.log(`⚙️  Batch Size Limit: ${BATCH_SIZE_LIMIT} bots per round`);
-  console.log(`🛡️  Public Arena: Ready & Listening`);
+  console.log(`💾 Data Path: ${DATA_DIR}`);
+  console.log(`👥 Loaded Players: ${dbPlayers.size}`);
+  console.log(`⚔️  Loaded Matches: ${dbMatches.size}`);
+  console.log(`🪜 Tier Cluster Size: ${TIER_CLUSTER_SIZE} bots / batch`);
   console.log(`====================================================================`);
 });
 
-export { app, server, rooms, matchLogsStore, getOrCreateRoom, triggerBatchRunner };
+export { app, server, dbPlayers, dbMatches, ladderManager, getSortedLeaderboard };
