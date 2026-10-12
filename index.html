@@ -44,8 +44,22 @@
 
       <div class="panel-body">
         <div class="form-group">
-          <label for="playerNameInput">Tên Người Chơi (Player Name):</label>
-          <input type="text" id="playerNameInput" class="form-control" value="CyberWarrior" placeholder="Nhập tên người chơi..." />
+          <label for="bot-name">Tên Bot (Bot Name):</label>
+          <input type="text" id="bot-name" class="form-control" value="CyberWarrior" placeholder="Nhập tên bot hiển thị..." />
+        </div>
+
+        <div class="form-group">
+          <label for="bot-author">Tác giả / Tên người chơi (Author Name):</label>
+          <input type="text" id="bot-author" class="form-control" value="Challenger" placeholder="Nhập tên người chơi..." />
+        </div>
+
+        <div class="form-group">
+          <label for="languageSelect">Ngôn ngữ lập trình (Language):</label>
+          <select id="languageSelect" class="form-control">
+            <option value="javascript">JavaScript (Node.js Sandbox)</option>
+            <option value="python">Python 3 (Standard I/O)</option>
+            <option value="cpp">C++ (g++ -O3 Standard I/O)</option>
+          </select>
         </div>
 
         <div class="form-group">
@@ -78,21 +92,21 @@
 
         <div class="form-group code-group">
           <div class="code-header">
-            <label for="botCodeEditor">Thuật Toán Bot:</label>
+            <label for="bot-code">Thuật Toán Bot (Mã Nguồn):</label>
             <div class="sample-loader">
-              <button id="btnSampleRandom" class="btn btn-xs btn-outline" title="Nạp bot Random">Random</button>
-              <button id="btnSampleHunter" class="btn btn-xs btn-outline" title="Nạp bot Thợ Săn">Hunter</button>
-              <button id="btnSampleRusher" class="btn btn-xs btn-outline" title="Nạp bot Rusher tấn công">Rusher</button>
+              <button type="button" id="btn-load-random" class="btn btn-xs btn-outline" title="Nạp bot Ngẫu Nhiên">Bot Ngẫu Nhiên</button>
+              <button type="button" id="btn-load-hunter" class="btn btn-xs btn-outline" title="Nạp bot Săn Mồi">Bot Săn Mồi</button>
+              <button type="button" id="btn-load-striker" class="btn btn-xs btn-outline" title="Nạp bot Chiếm Cờ / Vừa Công Vừa Thủ">Bot Chiếm Cờ</button>
             </div>
           </div>
           <div class="editor-wrapper">
-            <textarea id="botCodeEditor" class="code-editor" spellcheck="false"></textarea>
+            <textarea id="bot-code" class="code-editor" spellcheck="false"></textarea>
           </div>
           <p class="code-hint">💡 Bot nhận <code>gameState</code>, trả về <code>{ from: [r,c], to: [r,c] }</code>.</p>
         </div>
 
         <div class="action-buttons">
-          <button id="submitBotBtn" class="btn btn-primary btn-block btn-lg pulse-hover">
+          <button type="button" id="submitBotBtn" class="btn btn-primary btn-block btn-lg pulse-hover">
             <span class="icon">🚀</span> Nộp / Cập Nhật Code Bot
           </button>
         </div>

@@ -22,11 +22,7 @@
  */
 
 import { initBoard, PLAYER, PIECE_TYPE, countPieces } from './boardEngine.js';
-import { 
-  RANDOM_BOT_CODE, 
-  HUNTER_BOT_CODE, 
-  RUSHER_BOT_CODE 
-} from './botRunner.js';
+import { SAMPLE_BOTS, STARTER_TEMPLATES } from './sampleBots.js';
 
 // ============================================================================
 // STATE QUẢN LÝ ỨNG DỤNG CLIENT
@@ -424,8 +420,15 @@ function renderRecentMatchesList(matches) {
 
 // Nộp / Cập nhật code bot lên Server
 async function handleSubmitBot() {
-  const playerName = document.getElementById('playerNameInput').value.trim() || 'Player';
-  const botCode = document.getElementById('botCodeEditor').value.trim();
+  const nameEl = document.getElementById('bot-name') || document.getElementById('botNameInput');
+  const authorEl = document.getElementById('bot-author') || document.getElementById('playerNameInput');
+  const codeEl = document.getElementById('bot-code') || document.getElementById('botCodeEditor');
+  const langEl = document.getElementById('languageSelect');
+
+  const botName = nameEl ? nameEl.value.trim() : 'CyberWarrior';
+  const playerName = authorEl ? authorEl.value.trim() : 'Player';
+  const language = langEl ? langEl.value : 'javascript';
+  const botCode = codeEl ? codeEl.value.trim() : '';
 
   if (!botCode) {
     alert('Vui lòng không để trống mã nguồn bot!');
@@ -433,8 +436,10 @@ async function handleSubmitBot() {
   }
 
   const submitBtn = document.getElementById('submitBotBtn');
-  submitBtn.disabled = true;
-  submitBtn.innerText = 'Đang gửi lên server...';
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.innerText = 'Đang gửi lên server...';
+  }
 
   try {
     const res = await fetch('/api/bot/submit', {
@@ -442,8 +447,10 @@ async function handleSubmitBot() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         playerId: AppState.playerId,
-        playerName: playerName,
-        author: playerName,
+        botName: botName || 'CyberWarrior',
+        playerName: playerName || 'Player',
+        author: playerName || 'Player',
+        language: language,
         botCode: botCode,
         roomId: AppState.currentRoomId
       })
@@ -453,14 +460,17 @@ async function handleSubmitBot() {
     if (data.success) {
       updateQueueCard(false, data.data.queuePosition);
       fetchLeaderboard();
+      console.log('✅ [UI] Nộp bot thành công:', data.data);
     } else {
       alert('Lỗi nộp bot: ' + data.error);
     }
   } catch (err) {
     alert('Không thể kết nối đến server: ' + err.message);
   } finally {
-    submitBtn.disabled = false;
-    submitBtn.innerHTML = '<span class="icon">🚀</span> Nộp / Cập Nhật Code Bot';
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.innerHTML = '<span class="icon">🚀</span> Nộp / Cập Nhật Code Bot';
+    }
   }
 }
 
@@ -489,64 +499,156 @@ async function handleCreateRoom() {
   }
 }
 
-// Nạp code mẫu
-function loadSampleCode(type) {
-  const editor = document.getElementById('botCodeEditor');
-  if (type === 'hunter') {
-    editor.value = HUNTER_BOT_CODE;
-  } else if (type === 'rusher') {
-    editor.value = RUSHER_BOT_CODE;
+// Nạp code theo ngôn ngữ lập trình
+function loadLanguageTemplate(lang) {
+  const editor = document.getElementById('bot-code') || document.getElementById('botCodeEditor');
+  if (!editor) return;
+
+  if (lang === 'python') {
+    editor.value = STARTER_TEMPLATES.python;
+  } else if (lang === 'cpp') {
+    editor.value = STARTER_TEMPLATES.cpp;
   } else {
-    editor.value = RANDOM_BOT_CODE;
+    editor.value = STARTER_TEMPLATES.javascript;
   }
+  console.log(`ℹ️ [UI] Đã nạp Starter Template cho ngôn ngữ: ${lang}`);
+}
+
+/**
+ * Hàm nạp Bot Mẫu chuẩn (Random, Hunter, Striker/Guardian)
+ * Tự động điền code, tên bot, tác giả và chuyển ngôn ngữ về JavaScript
+ * @param {string} botKey ('random' | 'hunter' | 'striker')
+ */
+export function loadSampleBot(botKey) {
+  const key = (botKey || 'random').toLowerCase();
+  const codeEl = document.getElementById('bot-code') || document.getElementById('botCodeEditor');
+  const nameEl = document.getElementById('bot-name') || document.getElementById('botNameInput');
+  const authorEl = document.getElementById('bot-author') || document.getElementById('playerNameInput');
+  const langSelect = document.getElementById('languageSelect');
+
+  if (!codeEl) {
+    console.error('❌ [UI] Không tìm thấy ô nhập code (#bot-code hoặc #botCodeEditor)!');
+    return;
+  }
+
+  // 1. Chuyển dropdown ngôn ngữ về JavaScript
+  if (langSelect) {
+    langSelect.value = 'javascript';
+  }
+
+  // 2. Điền code, tên và tác giả tương ứng từ SAMPLE_BOTS thuần túy
+  let botData = null;
+
+  if (key === 'hunter') {
+    botData = {
+      name: '[Sample] Hunter Bot',
+      author: 'System Hunter',
+      code: SAMPLE_BOTS.hunter
+    };
+  } else if (key === 'striker' || key === 'guardian') {
+    botData = {
+      name: '[Sample] Striker Bot',
+      author: 'System Guardian',
+      code: SAMPLE_BOTS.striker
+    };
+  } else {
+    // Mặc định Random
+    botData = {
+      name: '[Sample] Random Bot',
+      author: 'System Rookie',
+      code: SAMPLE_BOTS.random
+    };
+  }
+
+  codeEl.value = botData.code;
+  if (nameEl) nameEl.value = botData.name;
+  if (authorEl) authorEl.value = botData.author;
+
+  console.log(`🎯 [UI] Nạp thành công Bot Mẫu: ${botData.name} (${key}) vào khung soạn thảo!`);
 }
 
 // ============================================================================
 // KHỞI ĐỘNG ỨNG DỤNG & GẮN SỰ KIỆN DOM
 // ============================================================================
 document.addEventListener('DOMContentLoaded', () => {
+  console.log('🚀 [UI] DOMContentLoaded: Bắt đầu khởi tạo giao diện...');
+
   // 1. Dựng bàn cờ 81 ô 1 lần duy nhất
   initBoardDOM();
   renderBoard(initBoard().grid);
 
-  // 2. Nạp code mẫu Rusher làm mặc định
-  loadSampleCode('rusher');
+  // 2. Nạp code mẫu ban đầu
+  loadSampleBot('striker');
 
-  // 3. Sự kiện nút nạp mẫu
-  document.getElementById('btnSampleRandom').addEventListener('click', () => loadSampleCode('random'));
-  document.getElementById('btnSampleHunter').addEventListener('click', () => loadSampleCode('hunter'));
-  document.getElementById('btnSampleRusher').addEventListener('click', () => loadSampleCode('rusher'));
+  // 3. Sự kiện thay đổi dropdown Ngôn ngữ lập trình
+  const langSelect = document.getElementById('languageSelect');
+  if (langSelect) {
+    langSelect.addEventListener('change', (e) => {
+      loadLanguageTemplate(e.target.value);
+    });
+  }
 
-  // 4. Nộp Bot
-  document.getElementById('submitBotBtn').addEventListener('click', handleSubmitBot);
+  // 4. Sự kiện các nút nạp Bot Mẫu (Hỗ trợ cả ID mới lẫn ID cũ nếu có)
+  const btnRandom = document.getElementById('btn-load-random') || document.getElementById('btnSampleRandom');
+  const btnHunter = document.getElementById('btn-load-hunter') || document.getElementById('btnSampleHunter');
+  const btnStriker = document.getElementById('btn-load-striker') || document.getElementById('btnSampleRusher');
 
-  // 5. Chọn / Tạo phòng
+  if (btnRandom) {
+    btnRandom.addEventListener('click', () => loadSampleBot('random'));
+  }
+  if (btnHunter) {
+    btnHunter.addEventListener('click', () => loadSampleBot('hunter'));
+  }
+  if (btnStriker) {
+    btnStriker.addEventListener('click', () => loadSampleBot('striker'));
+  }
+
+  // 5. Nộp Bot
+  const submitBtn = document.getElementById('submitBotBtn');
+  if (submitBtn) {
+    submitBtn.addEventListener('click', handleSubmitBot);
+  }
+
+  // 6. Chọn / Tạo phòng
   const roomSelect = document.getElementById('roomTypeSelect');
   const customRoomGroup = document.getElementById('customRoomGroup');
   const customRoomInput = document.getElementById('customRoomInput');
+  const joinRoomBtn = document.getElementById('joinRoomBtn');
+  const createRoomBtn = document.getElementById('createRoomBtn');
+  const refreshLbBtn = document.getElementById('refreshLbBtn');
 
-  roomSelect.addEventListener('change', () => {
-    if (roomSelect.value === 'PUBLIC') {
-      customRoomGroup.style.display = 'none';
-      AppState.currentRoomId = 'PUBLIC';
-      document.getElementById('roomBadge').innerText = 'Phòng: PUBLIC';
-      fetchLeaderboard();
-    } else {
-      customRoomGroup.style.display = 'flex';
-    }
-  });
+  if (roomSelect) {
+    roomSelect.addEventListener('change', () => {
+      if (roomSelect.value === 'PUBLIC') {
+        if (customRoomGroup) customRoomGroup.style.display = 'none';
+        AppState.currentRoomId = 'PUBLIC';
+        const badge = document.getElementById('roomBadge');
+        if (badge) badge.innerText = 'Phòng: PUBLIC';
+        fetchLeaderboard();
+      } else {
+        if (customRoomGroup) customRoomGroup.style.display = 'flex';
+      }
+    });
+  }
 
-  document.getElementById('joinRoomBtn').addEventListener('click', () => {
-    const val = customRoomInput.value.trim().toUpperCase();
-    if (val) {
-      AppState.currentRoomId = val;
-      document.getElementById('roomBadge').innerText = `Phòng: ${val}`;
-      fetchLeaderboard();
-    }
-  });
+  if (joinRoomBtn && customRoomInput) {
+    joinRoomBtn.addEventListener('click', () => {
+      const val = customRoomInput.value.trim().toUpperCase();
+      if (val) {
+        AppState.currentRoomId = val;
+        const badge = document.getElementById('roomBadge');
+        if (badge) badge.innerText = `Phòng: ${val}`;
+        fetchLeaderboard();
+      }
+    });
+  }
 
-  document.getElementById('createRoomBtn').addEventListener('click', handleCreateRoom);
-  document.getElementById('refreshLbBtn').addEventListener('click', fetchLeaderboard);
+  if (createRoomBtn) {
+    createRoomBtn.addEventListener('click', handleCreateRoom);
+  }
+  if (refreshLbBtn) {
+    refreshLbBtn.addEventListener('click', fetchLeaderboard);
+  }
 
   // 6. Điều khiển Replay Controls
   document.getElementById('btnPlayPause').addEventListener('click', togglePlayPause);

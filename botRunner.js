@@ -2,25 +2,36 @@
  * botRunner.js
  * 
  * RUNNER VÀ SANDBOX CHO BOT - CHIẾN THUẬT OẰN TÙ TÌ 9X9
+ * HỖ TRỢ ĐA NGÔN NGỮ: JAVASCRIPT, PYTHON 3, C++
  * 
- * Chuẩn hóa Interface:
- * 1. Bot input `gameState`:
- *    - board: Ma trận 9x9 (mỗi ô là null hoặc { owner: 'RED'|'BLUE', type: 'R'|'P'|'S' })
- *    - myColor: 'RED' hoặc 'BLUE'
- *    - myFlag: [r, c] (tọa độ cờ của phe mình: [0, 4] cho RED, [8, 4] cho BLUE)
- *    - enemyFlag: [r, c] (tọa độ cờ đối phương: [8, 4] cho RED, [0, 4] cho BLUE)
- *    - legalMoves: Danh sách [{ from: [r, c], to: [r, c] }]
- *    - turn: 'RED' hoặc 'BLUE'
+ * Chuẩn hóa Interface & Standard I/O Contract:
+ * 1. JavaScript:
+ *    - Hàm trực tiếp hoặc function body nhận `gameState`, trả về `{ from: [r, c], to: [r, c] }`
+ * 2. Python 3:
+ *    - Nhận JSON qua stdin `sys.stdin.read()`
+ *    - Xuất JSON qua stdout: `{"from": [r, c], "to": [r, c]}`
+ * 3. C++:
+ *    - Nhận JSON qua stdin `std::cin`
+ *    - Biên dịch qua `g++ -O3` (hoặc clang++/cl nếu có)
+ *    - Xuất JSON qua stdout: `{"from": [r, c], "to": [r, c]}`
  * 
- * 2. Bot return:
- *    - { from: [r, c], to: [r, c] }
- * 
- * 3. An toàn sandbox & Auto-fallback:
- *    - executeBotMove(botCodeString, gameState, timeoutMs = 200)
- *    - Cơ chế fallback tự động về legalMoves[0] khi gặp lỗi cú pháp, runtime, timeout, hoặc trả về move bất hợp lệ.
+ * Sandbox An Toàn & Auto-Fallback:
+ * - Khi bot gặp lỗi biên dịch, runtime, timeout (500ms) hoặc trả về nước đi không hợp lệ:
+ *   -> Tự động bốc fallbackMove = legalMoves[0]
+ *   -> Đánh dấu isError = true và ghi nhận errorMsg.
+ * - Tự động dọn dẹp (cleanup) file tạm sau khi biên dịch/thực thi.
  */
 
 import { PLAYER, PIECE_TYPE, canCapture } from './boardEngine.js';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
+import { spawnSync, execSync } from 'child_process';
+
+const TEMP_DIR = path.join(os.tmpdir(), 'oantuti_bot_sandbox');
+if (!fs.existsSync(TEMP_DIR)) {
+  fs.mkdirSync(TEMP_DIR, { recursive: true });
+}
 
 /**
  * Kiểm tra xem 2 tọa độ [r1, c1] và [r2, c2] có trùng nhau không
@@ -48,9 +59,6 @@ function chebyshevDistance(p1, p2) {
 
 /**
  * Hàm hỗ trợ tạo payload `gameState` chuẩn hóa cho Bot từ game engine state
- * @param {Object} rawEngineState (State từ boardEngine hoặc getGameStateForBot)
- * @param {string} myColor ('RED' | 'BLUE')
- * @returns {Object} Chuẩn interface: { board, myColor, myFlag, enemyFlag, legalMoves, turn }
  */
 export function formatGameStateForBot(rawEngineState, myColor = rawEngineState.turn) {
   const board = rawEngineState.grid 
@@ -82,20 +90,125 @@ export function formatGameStateForBot(rawEngineState, myColor = rawEngineState.t
 }
 
 // ============================================================================
-// 3 BOT MẪU CHUẨN (BUILT-IN BOTS)
+// TEMPLATE MÃ NGUỒN MẪU KHỞI TẠO (STARTER CODE TEMPLATES)
 // ============================================================================
 
-/**
- * Bot 1: RandomBot
- * Đi ngẫu nhiên một nước đi hợp lệ bất kỳ trong legalMoves
+export const STARTER_CODE_JS = `/**
+ * Bot Chiến Thuật Oẳn Tù Tì 9x9 (JavaScript)
+ * @param {Object} gameState: { board, myColor, myFlag, enemyFlag, legalMoves, turn }
+ * @returns {Object} { from: [r, c], to: [r, c] }
  */
-export function RandomBot(gameState) {
-  const { legalMoves } = gameState;
+function makeMove(gameState) {
+  const { board, legalMoves, enemyFlag } = gameState;
   if (!legalMoves || legalMoves.length === 0) return null;
-  const randomIndex = Math.floor(Math.random() * legalMoves.length);
-  return legalMoves[randomIndex];
+
+  // 1. Nếu có nước đi trực tiếp vào ô cờ đối thủ -> Đi ngay để thắng!
+  for (let i = 0; i < legalMoves.length; i++) {
+    const m = legalMoves[i];
+    if (m.to[0] === enemyFlag[0] && m.to[1] === enemyFlag[1]) {
+      return m;
+    }
+  }
+
+  // 2. Ưu tiên ăn quân đối phương nếu có
+  const captureMoves = legalMoves.filter(m => board[m.to[0]][m.to[1]] !== null);
+  if (captureMoves.length > 0) {
+    return captureMoves[0];
+  }
+
+  // 3. Mặc định đi nước đầu tiên hoặc ngẫu nhiên
+  return legalMoves[0];
 }
 
+return makeMove(gameState);
+`.trim();
+
+export const STARTER_CODE_PYTHON = `import sys
+import json
+
+def make_move(game_state):
+    board = game_state.get("board", [])
+    legal_moves = game_state.get("legalMoves", [])
+    enemy_flag = game_state.get("enemyFlag", [0, 4])
+    
+    if not legal_moves:
+        return None
+
+    # 1. Chiếm cờ đối phương nếu có thể
+    for move in legal_moves:
+        if move["to"] == enemy_flag:
+            return move
+
+    # 2. Ưu tiên ăn quân đối phương
+    for move in legal_moves:
+        to_r, to_c = move["to"]
+        if board[to_r][to_c] is not None:
+            return move
+
+    # 3. Mặc định chọn nước đi hợp lệ đầu tiên
+    return legal_moves[0]
+
+def main():
+    try:
+        raw_input = sys.stdin.read().strip()
+        if not raw_input:
+            return
+        game_state = json.loads(raw_input)
+        best_move = make_move(game_state)
+        if best_move:
+            print(json.dumps(best_move))
+    except Exception as e:
+        sys.stderr.write(f"Error: {e}\\n")
+
+if __name__ == "__main__":
+    main()
+`.trim();
+
+export const STARTER_CODE_CPP = `#include <iostream>
+#include <string>
+#include <vector>
+#include <sstream>
+
+// Standard I/O Contract: Nhận chuỗi JSON từ cin, xuất JSON ra cout
+int main() {
+    std::ios_base::sync_with_stdio(false);
+    std::cin.tie(NULL);
+
+    std::string input;
+    std::string line;
+    while (std::getline(std::cin, line)) {
+        input += line;
+    }
+
+    if (input.empty()) return 0;
+
+    // Tìm kiếm nước đi đầu tiên trong mảng "legalMoves"
+    // Cấu trúc: "legalMoves":[{"from":[r,c],"to":[r,c]}, ...]
+    size_t movesPos = input.find("\"legalMoves\"");
+    if (movesPos != std::string::npos) {
+        size_t fromPos = input.find("\"from\"", movesPos);
+        size_t toPos = input.find("\"to\"", fromPos);
+        if (fromPos != std::string::npos && toPos != std::string::npos) {
+            size_t openBracketFrom = input.find('[', fromPos);
+            size_t closeBracketFrom = input.find(']', openBracketFrom);
+            size_t openBracketTo = input.find('[', toPos);
+            size_t closeBracketTo = input.find(']', openBracketTo);
+
+            std::string fromCoord = input.substr(openBracketFrom, closeBracketFrom - openBracketFrom + 1);
+            std::string toCoord = input.substr(openBracketTo, closeBracketTo - openBracketTo + 1);
+
+            // Xuất ra stdout định dạng chuẩn JSON
+            std::cout << "{\\"from\\":" << fromCoord << ",\\"to\\":" << toCoord << "}" << std::endl;
+            return 0;
+        }
+    }
+
+    std::cout << "{\\"from\\":[0,0],\\"to\\":[0,0]}" << std::endl;
+    return 0;
+}
+`.trim();
+
+// 3 Bot Mẫu JS có sẵn
 export const RANDOM_BOT_CODE = `
 function bot(gameState) {
   const moves = gameState.legalMoves;
@@ -105,36 +218,6 @@ function bot(gameState) {
 }
 return bot(gameState);
 `.trim();
-
-/**
- * Bot 2: HunterBot (Bot săn mồi)
- * Ưu tiên các nước đi ăn quân đối phương theo luật tương khắc Oẳn Tù Tì.
- * Nếu có nhiều nước ăn quân -> chọn ngẫu nhiên 1 trong số đó.
- * Nếu không có nước ăn quân nào -> đi ngẫu nhiên 1 nước trong legalMoves.
- */
-export function HunterBot(gameState) {
-  const { board, legalMoves } = gameState;
-  if (!legalMoves || legalMoves.length === 0) return null;
-
-  const captureMoves = [];
-
-  for (const move of legalMoves) {
-    const targetCell = board[move.to[0]][move.to[1]];
-    // Nếu ô đích có quân (nghĩa là quân đối phương bị ăn)
-    if (targetCell) {
-      captureMoves.push(move);
-    }
-  }
-
-  if (captureMoves.length > 0) {
-    const idx = Math.floor(Math.random() * captureMoves.length);
-    return captureMoves[idx];
-  }
-
-  // Không có nước ăn quân -> đi ngẫu nhiên
-  const randIdx = Math.floor(Math.random() * legalMoves.length);
-  return legalMoves[randIdx];
-}
 
 export const HUNTER_BOT_CODE = `
 function bot(gameState) {
@@ -161,97 +244,6 @@ function bot(gameState) {
 return bot(gameState);
 `.trim();
 
-/**
- * Bot 3: GuardianAndStrikerBot (Bot chiến thuật: Vừa công vừa thủ)
- * 1. CHIẾM CỜ: Nếu có nước đi trực tiếp vào ô cờ đối phương enemyFlag -> Đi ngay lập tức để kết thúc trận đấu.
- * 2. THỦ CỜ: Kiểm tra nếu có quân đối phương áp sát myFlag trong phạm vi 1-2 ô:
- *    - Ưu tiên 2.1: Ăn trực tiếp quân đe dọa đó bằng nước cờ hợp lệ.
- *    - Ưu tiên 2.2: Di chuyển quân về chắn hoặc tiếp cận quân đe dọa / bảo vệ cờ (giảm khoảng cách tới cờ phe mình).
- * 3. SĂN MỒI: Nếu không bị đe dọa khẩn cấp, nếu có nước ăn quân đối phương -> thực hiện ăn quân.
- * 4. TẤN CÔNG / ÁP SÁT: Nếu không, chọn nước đi đưa quân tiến gần nhất về phía ô cờ đối thủ enemyFlag.
- */
-export function GuardianAndStrikerBot(gameState) {
-  const { board, myColor, myFlag, enemyFlag, legalMoves } = gameState;
-  if (!legalMoves || legalMoves.length === 0) return null;
-
-  // 1. CHIẾM CỜ (Tối thượng)
-  const winningMove = legalMoves.find(
-    m => m.to[0] === enemyFlag[0] && m.to[1] === enemyFlag[1]
-  );
-  if (winningMove) {
-    return winningMove;
-  }
-
-  // Tìm các quân đối phương và đánh giá độ nguy hiểm với myFlag
-  const enemyThreats = [];
-  for (let r = 0; r < board.length; r++) {
-    for (let c = 0; c < board[r].length; c++) {
-      const cell = board[r][c];
-      if (cell && cell.owner !== myColor) {
-        const distToMyFlag = chebyshevDistance([r, c], myFlag);
-        if (distToMyFlag <= 2) {
-          enemyThreats.push({ pos: [r, c], dist: distToMyFlag, type: cell.type });
-        }
-      }
-    }
-  }
-
-  // 2. PHÒNG THỦ CỜ (Nếu có kẻ địch trong phạm vi <= 2 ô so với cờ)
-  if (enemyThreats.length > 0) {
-    // Sắp xếp kẻ địch gần cờ nhất lên đầu
-    enemyThreats.sort((a, b) => a.dist - b.dist);
-    const primaryThreat = enemyThreats[0];
-
-    // 2.1 Tiêu diệt trực tiếp kẻ đe dọa
-    const captureThreatMove = legalMoves.find(
-      m => m.to[0] === primaryThreat.pos[0] && m.to[1] === primaryThreat.pos[1]
-    );
-    if (captureThreatMove) {
-      return captureThreatMove;
-    }
-
-    // 2.2 Di chuyển quân bọc lót về gần cờ hoặc áp sát kẻ đe dọa
-    const defensiveMoves = legalMoves.map(m => {
-      const distToThreat = chebyshevDistance(m.to, primaryThreat.pos);
-      const distToFlag = chebyshevDistance(m.to, myFlag);
-      return { move: m, score: -(distToThreat * 2 + distToFlag) };
-    });
-
-    defensiveMoves.sort((a, b) => b.score - a.score);
-    if (defensiveMoves.length > 0 && defensiveMoves[0].score > -10) {
-      return defensiveMoves[0].move;
-    }
-  }
-
-  // 3. SĂN MỒI (Nếu an toàn thì ưu tiên ăn quân)
-  const captureMoves = legalMoves.filter(m => board[m.to[0]][m.to[1]] !== null);
-  if (captureMoves.length > 0) {
-    // Ưu tiên ăn quân có vị trí gần cờ đối thủ hơn để vừa ăn vừa tiến lên
-    captureMoves.sort((a, b) => {
-      const distA = chebyshevDistance(a.to, enemyFlag);
-      const distB = chebyshevDistance(b.to, enemyFlag);
-      return distA - distB;
-    });
-    return captureMoves[0];
-  }
-
-  // 4. TIẾN CÔNG VỀ PHÍA CỜ ĐỐI THỦ
-  // Chọn nước đi giúp giảm khoảng cách tới enemyFlag nhiều nhất
-  let bestMove = legalMoves[0];
-  let minDistance = Infinity;
-
-  for (const move of legalMoves) {
-    const dist = chebyshevDistance(move.to, enemyFlag);
-    // Ưu tiên khoảng cách nhỏ hơn, nếu bằng nhau thì thêm chút ngẫu nhiên để linh hoạt
-    if (dist < minDistance) {
-      minDistance = dist;
-      bestMove = move;
-    }
-  }
-
-  return bestMove;
-}
-
 export const GUARDIAN_AND_STRIKER_BOT_CODE = `
 function bot(gameState) {
   const { board, myColor, myFlag, enemyFlag, legalMoves } = gameState;
@@ -261,7 +253,6 @@ function bot(gameState) {
     return Math.max(Math.abs(p1[0] - p2[0]), Math.abs(p1[1] - p2[1]));
   }
 
-  // 1. Chiếm cờ
   for (let i = 0; i < legalMoves.length; i++) {
     const m = legalMoves[i];
     if (m.to[0] === enemyFlag[0] && m.to[1] === enemyFlag[1]) {
@@ -269,7 +260,6 @@ function bot(gameState) {
     }
   }
 
-  // 2. Quét mối đe dọa gần cờ phe mình (khoảng cách <= 2)
   let primaryThreat = null;
   let minThreatDist = 999;
   for (let r = 0; r < board.length; r++) {
@@ -285,7 +275,6 @@ function bot(gameState) {
     }
   }
 
-  // Nếu bị uy hiếp, tìm cách ăn kẻ đe dọa
   if (primaryThreat) {
     for (let i = 0; i < legalMoves.length; i++) {
       const m = legalMoves[i];
@@ -295,7 +284,6 @@ function bot(gameState) {
     }
   }
 
-  // 3. Ăn quân nếu có
   const captureMoves = [];
   for (let i = 0; i < legalMoves.length; i++) {
     const m = legalMoves[i];
@@ -308,7 +296,6 @@ function bot(gameState) {
     return captureMoves[0];
   }
 
-  // 4. Tiến công về phía cờ đối thủ
   let bestMove = legalMoves[0];
   let minEnemyFlagDist = 999;
   for (let i = 0; i < legalMoves.length; i++) {
@@ -325,23 +312,215 @@ function bot(gameState) {
 return bot(gameState);
 `.trim();
 
+export const RUSHER_BOT_CODE = `
+function bot(gameState) {
+  const { board, enemyFlag, legalMoves } = gameState;
+  if (!legalMoves || legalMoves.length === 0) return null;
+
+  function dist(p1, p2) {
+    return Math.max(Math.abs(p1[0] - p2[0]), Math.abs(p1[1] - p2[1]));
+  }
+
+  for (let i = 0; i < legalMoves.length; i++) {
+    const m = legalMoves[i];
+    if (m.to[0] === enemyFlag[0] && m.to[1] === enemyFlag[1]) {
+      return m;
+    }
+  }
+
+  const captureMoves = [];
+  for (let i = 0; i < legalMoves.length; i++) {
+    const m = legalMoves[i];
+    if (board[m.to[0]][m.to[1]]) {
+      captureMoves.push(m);
+    }
+  }
+  if (captureMoves.length > 0) {
+    captureMoves.sort((a, b) => dist(a.to, enemyFlag) - dist(b.to, enemyFlag));
+    return captureMoves[0];
+  }
+
+  let bestMove = legalMoves[0];
+  let minEnemyDist = 999;
+  for (let i = 0; i < legalMoves.length; i++) {
+    const m = legalMoves[i];
+    const d = dist(m.to, enemyFlag);
+    if (d < minEnemyDist) {
+      minEnemyDist = d;
+      bestMove = m;
+    }
+  }
+
+  return bestMove;
+}
+return bot(gameState);
+`.trim();
+
+// Tên bí danh để tương thích hoàn toàn
+export const STRIKER_BOT_CODE = GUARDIAN_AND_STRIKER_BOT_CODE;
+
+/**
+ * 100% DANH SÁCH BOT MẪU CÓ SẴN (Người chơi giả / Sample Bots trong file hệ thống)
+ * Export rõ ràng đối tượng chứa mã nguồn để UI và Server đọc trực tiếp.
+ */
+export const SAMPLE_BOTS_MAP = {
+  random: {
+    key: 'random',
+    name: '[Sample] Random Bot',
+    author: 'System Rookie',
+    code: RANDOM_BOT_CODE,
+    description: 'Đi ngẫu nhiên 1 nước hợp lệ bất kỳ'
+  },
+  hunter: {
+    key: 'hunter',
+    name: '[Sample] Hunter Bot',
+    author: 'System Hunter',
+    code: HUNTER_BOT_CODE,
+    description: 'Ưu tiên săn và ăn quân đối phương theo luật Oẳn Tù Tì'
+  },
+  striker: {
+    key: 'striker',
+    name: '[Sample] Striker Bot',
+    author: 'System Guardian',
+    code: GUARDIAN_AND_STRIKER_BOT_CODE,
+    description: 'Ưu tiên chiếm cờ đối thủ và bảo vệ cờ phe mình'
+  },
+  guardian: {
+    key: 'guardian',
+    name: '[Sample] Guardian Bot',
+    author: 'System Guardian',
+    code: GUARDIAN_AND_STRIKER_BOT_CODE,
+    description: 'Vừa công vừa thủ toàn diện'
+  },
+  rusher: {
+    key: 'rusher',
+    name: '[Sample] Rusher Bot',
+    author: 'System Master',
+    code: RUSHER_BOT_CODE,
+    description: 'Tấn công dồn dập thẳng vào ô cờ đối phương'
+  }
+};
+
 // ============================================================================
-// HÀM AN TOÀN EXECUTE BOT MOVE (SANDBOX + TIMEOUT + AUTO-FALLBACK)
+// TẦNG THỰC THI TIẾN TRÌNH CON ĐA NGÔN NGỮ (EXTERNAL RUNNER)
+// ============================================================================
+
+/**
+ * Thực thi bot viết bằng Python 3
+ */
+function executePythonBot(code, gameState, timeoutMs = 500) {
+  const botId = `bot_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+  const filePath = path.join(TEMP_DIR, `${botId}.py`);
+
+  try {
+    fs.writeFileSync(filePath, code, 'utf-8');
+    const inputJson = JSON.stringify(gameState);
+
+    // Chạy python với stdin và timeout
+    const result = spawnSync('python', [filePath], {
+      input: inputJson,
+      encoding: 'utf-8',
+      timeout: timeoutMs,
+      maxBuffer: 1024 * 1024
+    });
+
+    if (result.error) {
+      if (result.error.code === 'ETIMEDOUT') {
+        throw new Error(`Python execution timed out after ${timeoutMs}ms`);
+      }
+      throw result.error;
+    }
+
+    if (result.status !== 0) {
+      throw new Error(`Python error (Exit code ${result.status}): ${result.stderr || 'Unknown'}`);
+    }
+
+    const stdout = (result.stdout || '').trim();
+    if (!stdout) {
+      throw new Error('Python bot did not output any move to stdout');
+    }
+
+    return JSON.parse(stdout);
+  } finally {
+    try {
+      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    } catch (_) {}
+  }
+}
+
+/**
+ * Thực thi bot viết bằng C++
+ */
+function executeCppBot(code, gameState, timeoutMs = 500) {
+  const botId = `bot_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+  const srcPath = path.join(TEMP_DIR, `${botId}.cpp`);
+  const binExt = process.platform === 'win32' ? '.exe' : '';
+  const binPath = path.join(TEMP_DIR, `${botId}${binExt}`);
+
+  try {
+    fs.writeFileSync(srcPath, code, 'utf-8');
+
+    // 1. Biên dịch C++
+    try {
+      execSync(`g++ -O3 "${srcPath}" -o "${binPath}"`, {
+        timeout: 8000,
+        stdio: 'pipe'
+      });
+    } catch (compileErr) {
+      const errDetail = compileErr.stderr ? compileErr.stderr.toString() : compileErr.message;
+      throw new Error(`C++ Compile Error:\n${errDetail}`);
+    }
+
+    // 2. Chạy binary
+    const inputJson = JSON.stringify(gameState);
+    const runResult = spawnSync(binPath, [], {
+      input: inputJson,
+      encoding: 'utf-8',
+      timeout: timeoutMs,
+      maxBuffer: 1024 * 1024
+    });
+
+    if (runResult.error) {
+      if (runResult.error.code === 'ETIMEDOUT') {
+        throw new Error(`C++ execution timed out after ${timeoutMs}ms`);
+      }
+      throw runResult.error;
+    }
+
+    if (runResult.status !== 0) {
+      throw new Error(`C++ runtime error (Exit code ${runResult.status}): ${runResult.stderr || 'Unknown'}`);
+    }
+
+    const stdout = (runResult.stdout || '').trim();
+    if (!stdout) {
+      throw new Error('C++ bot did not output any move to stdout');
+    }
+
+    return JSON.parse(stdout);
+  } finally {
+    try {
+      if (fs.existsSync(srcPath)) fs.unlinkSync(srcPath);
+      if (fs.existsSync(binPath)) fs.unlinkSync(binPath);
+    } catch (_) {}
+  }
+}
+
+// ============================================================================
+// HÀM AN TOÀN EXECUTE BOT MOVE (TỔNG HỢP JS / PYTHON / C++)
 // ============================================================================
 
 /**
  * Thực thi mã nguồn bot an toàn với Sandbox, Timeout và Cơ chế Auto-Fallback
  * 
- * @param {string|Function} botInput - Chuỗi code của bot hoặc hàm JS function của bot
+ * @param {string|Function|Object} botConfig - Code string, function, hoặc object { code, language }
  * @param {Object} gameState - State chuẩn: { board, myColor, myFlag, enemyFlag, legalMoves, turn }
- * @param {number} timeoutMs - Giới hạn thời gian chạy bot (mặc định 200ms)
+ * @param {number} timeoutMs - Giới hạn thời gian chạy bot (mặc định 500ms)
  * @returns {{ move: Object|null, isError: boolean, errorMsg: string|null, executionTimeMs: number }}
  */
-export function executeBotMove(botInput, gameState, timeoutMs = 200) {
+export function executeBotMove(botConfig, gameState, timeoutMs = 500) {
   const startTime = Date.now();
   const legalMoves = gameState?.legalMoves || [];
 
-  // Trường hợp không còn nước đi hợp lệ
   if (!legalMoves || legalMoves.length === 0) {
     return {
       move: null,
@@ -356,35 +535,47 @@ export function executeBotMove(botInput, gameState, timeoutMs = 200) {
 
   try {
     let returnedMove = null;
+    let language = 'javascript';
+    let code = botConfig;
 
-    if (typeof botInput === 'function') {
-      // Trường hợp truyền trực tiếp hàm JavaScript
-      returnedMove = botInput(gameState);
-    } else if (typeof botInput === 'string') {
-      // Trường hợp truyền code string: Tạo Function sandbox độc lập
-      // Cung cấp các tham số cần thiết trong scope, cô lập môi trường
-      const wrappedBody = `
-        "use strict";
-        const startTime = Date.now();
-        const timeoutMs = ${Number(timeoutMs) || 200};
-        
-        // Wrap execution
-        const run = function() {
-          ${botInput}
-        };
+    if (typeof botConfig === 'object' && botConfig !== null) {
+      language = (botConfig.language || 'javascript').toLowerCase();
+      code = botConfig.code || botConfig.botCode || '';
+    }
 
-        const result = run();
-        if (Date.now() - startTime > timeoutMs) {
-          throw new Error("Bot execution exceeded timeout of " + timeoutMs + "ms");
-        }
-        return result;
-      `;
+    // 1. Phân nhánh ngôn ngữ Python 3
+    if (language === 'python' || language === 'python3' || language === 'py') {
+      returnedMove = executePythonBot(code, gameState, timeoutMs);
+    }
+    // 2. Phân nhánh ngôn ngữ C++
+    else if (language === 'cpp' || language === 'c++') {
+      returnedMove = executeCppBot(code, gameState, timeoutMs);
+    }
+    // 3. Phân nhánh JavaScript (Mặc định)
+    else {
+      if (typeof code === 'function') {
+        returnedMove = code(gameState);
+      } else if (typeof code === 'string') {
+        const wrappedBody = `
+          "use strict";
+          const startTime = Date.now();
+          const timeoutMs = ${Number(timeoutMs) || 500};
+          
+          const run = function() {
+            ${code}
+          };
 
-      // Tạo function an toàn với các biến truyền vào
-      const botExecutor = new Function('gameState', wrappedBody);
-      returnedMove = botExecutor(gameState);
-    } else {
-      throw new Error(`Invalid bot input type: expected function or string, got ${typeof botInput}`);
+          const result = run();
+          if (Date.now() - startTime > timeoutMs) {
+            throw new Error("Bot execution exceeded timeout of " + timeoutMs + "ms");
+          }
+          return result;
+        `;
+        const botExecutor = new Function('gameState', wrappedBody);
+        returnedMove = botExecutor(gameState);
+      } else {
+        throw new Error(`Invalid bot input type for JavaScript: ${typeof code}`);
+      }
     }
 
     const elapsed = Date.now() - startTime;
@@ -396,7 +587,7 @@ export function executeBotMove(botInput, gameState, timeoutMs = 200) {
     const validMove = findMatchingMove(returnedMove, legalMoves);
     if (!validMove) {
       throw new Error(
-        `Bot returned illegal move: ${JSON.stringify(returnedMove)}. Must be one of legalMoves.`
+        `Bot returned illegal move: ${JSON.stringify(returnedMove)}. Must match one of legalMoves.`
       );
     }
 
@@ -421,57 +612,11 @@ export function executeBotMove(botInput, gameState, timeoutMs = 200) {
 export default {
   formatGameStateForBot,
   executeBotMove,
-  RandomBot,
-  HunterBot,
-  GuardianAndStrikerBot,
+  STARTER_CODE_JS,
+  STARTER_CODE_PYTHON,
+  STARTER_CODE_CPP,
   RANDOM_BOT_CODE,
   HUNTER_BOT_CODE,
-  GUARDIAN_AND_STRIKER_BOT_CODE
+  GUARDIAN_AND_STRIKER_BOT_CODE,
+  RUSHER_BOT_CODE
 };
-// Thêm code mẫu RusherBot (Bot tấn công dồn dập vào cờ đối thủ)
-export const RUSHER_BOT_CODE = `
-function bot(gameState) {
-  const { board, myFlag, enemyFlag, legalMoves } = gameState;
-  if (!legalMoves || legalMoves.length === 0) return null;
-
-  function dist(p1, p2) {
-    return Math.max(Math.abs(p1[0] - p2[0]), Math.abs(p1[1] - p2[1]));
-  }
-
-  // 1. Chiếm cờ trực tiếp nếu có cơ hội
-  for (let i = 0; i < legalMoves.length; i++) {
-    const m = legalMoves[i];
-    if (m.to[0] === enemyFlag[0] && m.to[1] === enemyFlag[1]) {
-      return m;
-    }
-  }
-
-  // 2. Nếu có nước ăn quân trên đường tiến tới cờ đối phương -> Ăn ngay
-  const captureMoves = [];
-  for (let i = 0; i < legalMoves.length; i++) {
-    const m = legalMoves[i];
-    if (board[m.to[0]][m.to[1]]) {
-      captureMoves.push(m);
-    }
-  }
-  if (captureMoves.length > 0) {
-    captureMoves.sort((a, b) => dist(a.to, enemyFlag) - dist(b.to, enemyFlag));
-    return captureMoves[0];
-  }
-
-  // 3. Tiến công tối đa về phía cờ đối phương (Rusher Style)
-  let bestMove = legalMoves[0];
-  let minEnemyDist = 999;
-  for (let i = 0; i < legalMoves.length; i++) {
-    const m = legalMoves[i];
-    const d = dist(m.to, enemyFlag);
-    if (d < minEnemyDist) {
-      minEnemyDist = d;
-      bestMove = m;
-    }
-  }
-
-  return bestMove;
-}
-return bot(gameState);
-`.trim();

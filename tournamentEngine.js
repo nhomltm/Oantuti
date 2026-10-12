@@ -46,11 +46,14 @@ function cloneBoard(grid) {
  * @returns {Object}
  */
 export function normalizeBot(bot, index = 0) {
+  const language = bot.language || (typeof bot.code === 'object' && bot.code?.language) || 'javascript';
+  const code = bot.code || bot.botFunction || bot.botCode || bot;
   return {
     id: bot.id || `bot_${index}_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-    name: bot.name || `Bot_${index + 1}`,
+    name: bot.name || bot.botName || `Bot_${index + 1}`,
     author: bot.author || 'Anonymous',
-    code: bot.code || bot.botFunction || bot,
+    language: language,
+    code: typeof code === 'object' ? code : { code, language },
     avatar: bot.avatar || null
   };
 }

@@ -279,8 +279,20 @@ class LadderQueueManager {
 
     // Tạo danh sách 10 bot thi đấu
     const batchBots = [
-      { id: challenger.playerId, name: challenger.playerName, author: challenger.author, code: challenger.botCode },
-      ...clusterOpponents.map(o => ({ id: o.playerId, name: o.playerName, author: o.author, code: o.botCode }))
+      { 
+        id: challenger.playerId, 
+        name: challenger.botName || challenger.playerName, 
+        author: challenger.author, 
+        language: challenger.language || 'javascript',
+        code: { code: challenger.botCode, language: challenger.language || 'javascript' }
+      },
+      ...clusterOpponents.map(o => ({ 
+        id: o.playerId, 
+        name: o.botName || o.playerName, 
+        author: o.author, 
+        language: o.language || 'javascript',
+        code: { code: o.botCode, language: o.language || 'javascript' }
+      }))
     ];
 
     // Chạy mini-tournament bất đồng bộ (Non-blocking)
@@ -365,15 +377,16 @@ const ladderManager = new LadderQueueManager();
  */
 app.post('/api/bot/submit', (req, res) => {
   try {
-    const { playerId, playerName, author, botCode, roomId } = req.body;
+    const { playerId, botName, playerName, author, language, botCode, roomId } = req.body;
 
     if (!botCode || typeof botCode !== 'string' || botCode.trim().length === 0) {
       return res.status(400).json({ error: 'botCode is required and cannot be empty.' });
     }
 
     const assignedPlayerId = playerId || `player_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-    const assignedPlayerName = playerName || 'Mysterious Bot';
-    const assignedAuthor = author || 'Anonymous';
+    const assignedBotName = (botName || playerName || 'AlphaBot').trim();
+    const assignedAuthor = (author || playerName || 'Anonymous').trim();
+    const assignedLanguage = (language || 'javascript').toLowerCase();
     const targetRoomId = (roomId || 'PUBLIC').trim().toUpperCase();
 
     // Lấy record cũ hoặc tạo mới (Giữ nguyên điểm số cũ nếu chỉ cập nhật code bot)
@@ -381,8 +394,10 @@ app.post('/api/bot/submit', (req, res) => {
     if (!playerRecord) {
       playerRecord = {
         playerId: assignedPlayerId,
-        playerName: assignedPlayerName,
+        botName: assignedBotName,
+        playerName: assignedBotName,
         author: assignedAuthor,
+        language: assignedLanguage,
         botCode: botCode.trim(),
         score: 0,
         wins: 0,
@@ -394,8 +409,10 @@ app.post('/api/bot/submit', (req, res) => {
         updatedAt: Date.now()
       };
     } else {
-      playerRecord.playerName = assignedPlayerName;
+      playerRecord.botName = assignedBotName;
+      playerRecord.playerName = assignedBotName;
       playerRecord.author = assignedAuthor;
+      playerRecord.language = assignedLanguage;
       playerRecord.botCode = botCode.trim();
       playerRecord.roomId = targetRoomId;
       playerRecord.updatedAt = Date.now();
@@ -412,7 +429,9 @@ app.post('/api/bot/submit', (req, res) => {
       message: 'Bot đã nộp thành công và bắt đầu hành trình Leo Tháp theo cụm!',
       data: {
         playerId: assignedPlayerId,
-        playerName: assignedPlayerName,
+        botName: assignedBotName,
+        author: assignedAuthor,
+        language: assignedLanguage,
         roomId: targetRoomId,
         currentScore: playerRecord.score,
         queuePosition: ladderManager.jobQueue.length
