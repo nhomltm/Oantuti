@@ -28,8 +28,8 @@
       <button class="nav-tab-btn" id="tab-submit" data-target="view-submit">
         <span class="tab-icon">💻</span> Nộp Code Bot
       </button>
-      <button class="nav-tab-btn" id="tab-manual" data-target="view-manual">
-        <span class="tab-icon">🎮</span> Chơi Thử Bằng Tay
+      <button class="nav-tab-btn" id="tab-sandbox" data-target="view-sandbox">
+        <span class="tab-icon">🧪</span> Test Bot
       </button>
       <button class="nav-tab-btn" id="tab-leaderboard" data-target="view-leaderboard">
         <span class="tab-icon">🏆</span> Bảng Xếp Hạng & Khán Đài
@@ -67,8 +67,8 @@
             <button class="btn btn-primary btn-lg pulse-hover" id="btn-cta-submit">
               <span class="icon">⚡</span> Tham Gia Nộp Bot Ngay
             </button>
-            <button class="btn btn-secondary btn-lg" id="btn-cta-manual">
-              <span class="icon">🎮</span> Chơi Thử Bằng Tay
+            <button class="btn btn-secondary btn-lg" id="btn-cta-sandbox">
+              <span class="icon">🧪</span> Phòng Thử Nghiệm (Test Bot)
             </button>
             <button class="btn btn-secondary btn-lg" id="btn-cta-leaderboard">
               <span class="icon">🏆</span> Xem Bảng Xếp Hạng
@@ -367,26 +367,26 @@
     </section>
 
     <!-- ======================================================================
-         TAB 4: CHƠI BẰNG TAY - LUYỆN TẬP / TEST BOT (#view-manual)
+         TAB 4: PHÒNG THỬ NGHIỆM BOT - TEST BOT SANDBOX (#view-sandbox)
          ====================================================================== -->
-    <section class="tab-view" id="view-manual">
+    <section class="tab-view" id="view-sandbox">
       <div class="manual-layout-container">
-        <!-- CỘT TRÁI: BÀN CỜ TƯƠNG TÁC THỰC CHIẾN (INTERACTIVE 9X9 BOARD) -->
+        <!-- CỘT TRÁI: BÀN CỜ 9X9 (MANUAL VS BOT HOẶC BOT VS BOT SIMULATION) -->
         <div class="manual-left-col">
           <div class="panel manual-board-panel">
             <div class="panel-header">
               <div class="panel-title">
-                <span class="icon">🎮</span>
-                <h2>Bàn Cờ Thực Chiến 9×9 (Người Chơi vs Bot)</h2>
+                <span class="icon">🧪</span>
+                <h2>Phòng Thử Nghiệm Bot (Test Bot Sandbox)</h2>
               </div>
               <span class="badge badge-primary" id="manualTurnBadge">Lượt: Người chơi (🔴 RED)</span>
             </div>
 
-            <!-- Bảng hiển thị trạng thái trận đấu -->
+            <!-- Bảng hiển thị tên 2 bên tham chiến & trạng thái -->
             <div class="match-banner" id="manualMatchBanner">
               <div class="team-card team-red" id="manualCardRed">
                 <div class="team-flag-tag">🔴 RED (Cờ [0,4])</div>
-                <div class="team-name" id="manualRoleRed">👤 Người Chơi</div>
+                <div class="team-name" id="manualRoleRed">RED: Người Chơi</div>
                 <div class="team-score" id="manualPiecesRed">Quân còn lại: 6</div>
               </div>
               <div class="match-vs">
@@ -395,42 +395,60 @@
               </div>
               <div class="team-card team-blue" id="manualCardBlue">
                 <div class="team-flag-tag">🔵 BLUE (Cờ [8,4])</div>
-                <div class="team-name" id="manualRoleBlue">🤖 Bot Đối Thủ</div>
+                <div class="team-name" id="manualRoleBlue">BLUE: Bot Của Bạn</div>
                 <div class="team-score" id="manualPiecesBlue">Quân còn lại: 6</div>
               </div>
             </div>
 
-            <!-- Bàn Cờ 9x9 Tương Tác -->
+            <!-- Bàn Cờ 9x9 -->
             <div class="board-wrapper manual-board-wrapper">
               <div id="manualBoardGrid" class="board-grid interactive-grid">
-                <!-- 81 ô cờ tương tác click chọn & highlight nước đi hợp lệ -->
+                <!-- 81 ô cờ 9x9 -->
               </div>
             </div>
 
-            <!-- Thanh thông báo & Nút thao tác -->
+            <!-- Hộp điều khiển bàn cờ & Thanh điều khiển tự động (Chế độ 2) -->
             <div class="manual-controls-box">
               <div class="manual-status-banner" id="manualStatusBanner">
                 👉 Hãy click chọn 1 quân cờ của phe bạn để xem các nước đi hợp lệ (màu xanh)!
               </div>
+
+              <!-- Thanh điều khiển trận đấu tự động (Chỉ hiện ở Chế độ 2: Bot vs Bot Simulation) -->
+              <div class="bot-sim-controls" id="botVsBotControls" style="display: none;">
+                <div class="sim-buttons-row">
+                  <button type="button" id="btnSimPlayPause" class="btn btn-primary">
+                    <span id="simPlayIcon">▶</span> <span id="simPlayLabel">Bắt Đầu Tự Động Chạy</span>
+                  </button>
+                  <button type="button" id="btnSimStepNext" class="btn btn-secondary">
+                    <span class="icon">⏭</span> Từng Nước Đi (Step Next)
+                  </button>
+                </div>
+                <div class="sim-speed-row">
+                  <label for="simSpeedRange">⏱️ Tốc độ giữa các Turn:</label>
+                  <input type="range" id="simSpeedRange" min="500" max="2000" step="500" value="500" class="turn-slider" />
+                  <span class="badge badge-primary" id="simSpeedLabel">0.5s / turn</span>
+                </div>
+              </div>
+
               <div class="manual-action-buttons">
                 <button type="button" id="btnManualReset" class="btn btn-primary">
-                  <span class="icon">🔄</span> Bắt đầu lại (Reset Match)
+                  <span class="icon">🔄</span> Bắt đầu lại (Reset)
                 </button>
                 <button type="button" id="btnManualSwapSide" class="btn btn-secondary">
-                  <span class="icon">🔀</span> Đổi phe (Đang cầm: 🔴 RED)
+                  <span class="icon">🔀</span> Đổi phe (RED ⇄ BLUE)
                 </button>
               </div>
             </div>
           </div>
         </div>
 
-        <!-- CỘT PHẢI: KHU VỰC THỬ NGHIỆM BOT (BOT TEST BENCH) -->
+        <!-- CỘT PHẢI: PHÒNG THỬ NGHIỆM BOT (TEST BOT SANDBOX) -->
         <div class="manual-right-col">
           <div class="panel manual-bench-panel">
             <div class="panel-header">
               <div class="panel-title">
-                <span class="icon">🧪</span>
-                <h2>Khu Vực Thử Nghiệm Bot (Bot Test Bench)</h2>
+                <span class="icon">💻</span>
+                <h2>Cấu Hình & Code Bot Của Bạn</h2>
               </div>
               <div class="sample-loader">
                 <button type="button" id="btnManualSyncCode" class="btn btn-xs btn-outline" title="Lấy code đang soạn ở Tab Nộp Code">📥 Lấy từ Tab Nộp</button>
@@ -441,27 +459,44 @@
             </div>
 
             <div class="manual-bench-body">
-              <!-- Chọn chế độ đối thủ & Nút áp dụng -->
-              <div class="manual-config-row">
-                <div class="form-group manual-opponent-group">
-                  <label for="manualOpponentSelect">Chế độ Đối Thủ (Opponent Mode):</label>
-                  <select id="manualOpponentSelect" class="form-control">
-                    <option value="custom">💻 Code bot tự viết ở khung bên dưới</option>
-                    <option value="striker">🛡️ Bot mẫu hệ thống: Striker / Guardian (Chiếm Cờ)</option>
-                    <option value="hunter">🏹 Bot mẫu hệ thống: Hunter (Săn Mồi)</option>
-                    <option value="random">🎲 Bot mẫu hệ thống: Random (Ngẫu Nhiên)</option>
-                  </select>
-                </div>
-                <button type="button" id="btnManualApplyPlay" class="btn btn-primary pulse-hover manual-apply-btn">
-                  <span class="icon">⚡</span> Áp dụng code & Chơi ngay
+              <!-- Bộ chuyển chế độ (Mode Selector: 2 Chế Độ Thử Nghiệm) -->
+              <div class="sandbox-mode-selector" role="tablist" aria-label="Chế độ thử nghiệm Bot">
+                <button type="button" class="sandbox-mode-btn active" id="modeBtnManualVsBot" data-mode="manual_vs_bot">
+                  <span class="mode-icon">🎮</span>
+                  <div class="mode-info">
+                    <span class="mode-title">Chế độ 1: Chơi Bằng Tay vs Bot</span>
+                    <span class="mode-sub">Tự đi cờ bằng tay đấu với Bot của bạn</span>
+                  </div>
+                </button>
+                <button type="button" class="sandbox-mode-btn" id="modeBtnBotVsBot" data-mode="bot_vs_bot">
+                  <span class="mode-icon">🤖</span>
+                  <div class="mode-info">
+                    <span class="mode-title">Chế độ 2: Bot Mẫu vs Bot Của Bạn</span>
+                    <span class="mode-sub">2 Bot tự động đấu trực tiếp trên bàn cờ</span>
+                  </div>
                 </button>
               </div>
 
-              <!-- Khung nhập code test nhanh -->
+              <!-- Hàng chọn Đối Thủ Bot Mẫu (Khi ở Chế độ 2) + Nút Áp Dụng Code -->
+              <div class="manual-config-row">
+                <div class="form-group manual-opponent-group" id="botVsBotOpponentGroup" style="display: none;">
+                  <label for="sandboxOpponentSelect">Chọn Bot Mẫu Đối Thủ (Bot vs Bot):</label>
+                  <select id="sandboxOpponentSelect" class="form-control">
+                    <option value="hunter" selected>🏹 Bot Săn Mồi (Hunter Bot)</option>
+                    <option value="striker">🚩 Bot Chiếm Cờ (Flag Rusher Bot)</option>
+                    <option value="random">🎲 Bot Ngẫu Nhiên (Random Bot)</option>
+                  </select>
+                </div>
+                <button type="button" id="btnManualApplyPlay" class="btn btn-primary pulse-hover manual-apply-btn">
+                  <span class="icon">⚡</span> Áp dụng code & Bắt đầu lại
+                </button>
+              </div>
+
+              <!-- Khung nhập code cho Bot của người chơi -->
               <div class="manual-editor-section">
                 <div class="manual-section-header">
-                  <span>📝 Code Bot Đang Thử Nghiệm (JavaScript <code>makeMove(gameState)</code>):</span>
-                  <span class="badge badge-primary" id="manualBotModeBadge">Custom Code</span>
+                  <span>📝 Code Bot Của Bạn (JavaScript <code>makeMove(gameState)</code>):</span>
+                  <span class="badge badge-primary" id="manualBotModeBadge">Bot Của Bạn</span>
                 </div>
                 <div class="manual-editor-wrapper">
                   <textarea id="manual-test-code" class="code-editor" spellcheck="false"></textarea>
@@ -478,7 +513,7 @@
                   </div>
                 </div>
                 <div class="manual-move-log" id="manualMoveHistory">
-                  <div class="log-empty">Chưa có nước đi nào. Hãy click chọn quân cờ bên trái để bắt đầu!</div>
+                  <div class="log-empty">Chưa có nước đi nào. Hãy bắt đầu thử nghiệm!</div>
                 </div>
               </div>
             </div>

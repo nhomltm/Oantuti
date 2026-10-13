@@ -52,18 +52,22 @@ const AppState = {
   lastQueueStatus: ''         // Trạng thái hàng đợi
 };
 
-// State riêng cho Tab 4: Chơi Bằng Tay (Luyện Tập / Test Bot)
+// State riêng cho Tab 4: Phòng Thử Nghiệm Bot (Test Bot Sandbox)
 const ManualArenaState = {
-  gameState: null,            // Trạng thái bàn cờ thực chiến từ initBoard()
-  humanPlayer: PLAYER.RED,    // Phe của Người chơi (PLAYER.RED | PLAYER.BLUE)
-  botPlayer: PLAYER.BLUE,     // Phe của Bot đối thủ
-  selectedCell: null,         // Tọa độ [r, c] quân cờ đang được Người chơi chọn
-  legalMovesForSelected: [],  // Danh sách các nước đi hợp lệ của quân đang chọn
-  lastMove: null,             // Nước đi gần nhất { from: [r,c], to: [r,c] }
-  isBotThinking: false,       // Khóa bàn cờ khi Bot đang suy nghĩ
-  botThinkTimer: null,        // Timer tạo nhịp đi tự nhiên cho Bot
-  opponentMode: 'custom',     // 'custom' | 'striker' | 'hunter' | 'random'
-  cellElements: []            // Mảng 81 ô DOM [r][c] của bàn cờ #manualBoardGrid
+  sandboxMode: 'manual_vs_bot', // 'manual_vs_bot' | 'bot_vs_bot'
+  gameState: null,              // Trạng thái bàn cờ thực chiến từ initBoard()
+  humanPlayer: PLAYER.RED,      // Mode 1: Phe Người Chơi | Mode 2: Phe của "Bot Của Bạn"
+  botPlayer: PLAYER.BLUE,       // Mode 1: Phe "Bot Của Bạn" | Mode 2: Phe của "Bot Mẫu"
+  sampleOpponentKey: 'hunter',  // 'hunter' | 'striker' | 'random' (Dùng cho Mode 2)
+  selectedCell: null,           // Tọa độ [r, c] quân cờ đang được Người chơi chọn
+  legalMovesForSelected: [],    // Danh sách các nước đi hợp lệ của quân đang chọn
+  lastMove: null,               // Nước đi gần nhất { from: [r,c], to: [r,c] }
+  isBotThinking: false,         // Khóa bàn cờ khi Bot đang suy nghĩ
+  botThinkTimer: null,          // Timer tạo nhịp đi tự nhiên cho Bot ở Mode 1
+  isSimRunning: false,          // Trạng thái đang chạy tự động ở Mode 2 (Bot vs Bot)
+  simTimer: null,               // Interval timer cho Mode 2 (Bot vs Bot)
+  simSpeedMs: 500,              // Tốc độ giữa các turn ở Mode 2 (500ms - 2000ms)
+  cellElements: []              // Mảng 81 ô DOM [r][c] của bàn cờ #manualBoardGrid
 };
 
 // Biểu tượng quân cờ
@@ -612,8 +616,29 @@ export function loadSampleBot(botKey) {
 }
 
 // ============================================================================
-// TAB 4: CHƠI BẰNG TAY - LUYỆN TẬP / TEST BOT (#view-manual)
+// TAB 4: PHÒNG THỬ NGHIỆM BOT - TEST BOT SANDBOX (#view-sandbox)
 // ============================================================================
+
+// Tên hiển thị các Bot Mẫu hệ thống cho Chế độ 2 (Bot vs Bot Simulation)
+const SAMPLE_OPPONENT_LABELS = {
+  hunter: '[Sample] Hunter Bot',
+  striker: '[Sample] Flag Rusher Bot',
+  random: '[Sample] Random Bot'
+};
+
+/**
+ * Lấy tên hiển thị của phe (RED hoặc BLUE) tùy theo Chế độ hiện tại:
+ * - Chế độ 1 (manual_vs_bot): "Người Chơi" vs "Bot Của Bạn"
+ * - Chế độ 2 (bot_vs_bot):    "Bot Của Bạn" vs "[Sample] Hunter Bot / Flag Rusher Bot / Random Bot"
+ */
+function getSandboxRoleName(color) {
+  const isPrimarySide = color === ManualArenaState.humanPlayer;
+  if (ManualArenaState.sandboxMode === 'bot_vs_bot') {
+    if (isPrimarySide) return 'Bot Của Bạn';
+    return SAMPLE_OPPONENT_LABELS[ManualArenaState.sampleOpponentKey] || '[Sample] Hunter Bot';
+  }
+  return isPrimarySide ? 'Người Chơi' : 'Bot Của Bạn';
+}
 
 /**
  * Khởi tạo 81 ô DOM cho bàn cờ tương tác #manualBoardGrid
@@ -656,7 +681,7 @@ function initManualBoardDOM() {
   }
 }
 
-// Mảng lưu trữ toàn bộ lịch sử nước đi của ván đấu thực chiến hiện tại
+// Mảng lưu trữ toàn bộ lịch sử nước đi của ván đấu thử nghiệm hiện tại
 let matchMoveHistory = [];
 
 /**
@@ -678,7 +703,7 @@ function renderMoveHistory() {
   logContainer.innerHTML = '';
 
   if (matchMoveHistory.length === 0) {
-    logContainer.innerHTML = `<div class="log-empty">Chưa có nước đi nào. Hãy click chọn quân cờ bên trái để bắt đầu!</div>`;
+    logContainer.innerHTML = `<div class="log-empty">Chưa có nước đi nào. Hãy bắt đầu thử nghiệm!</div>`;
     return;
   }
 
@@ -740,6 +765,40 @@ function appendManualLog(text, typeClass = 'log-human') {
 }
 
 /**
+ * Cập nhật nút Play / Pause của Chế độ 2 (Bot vs Bot Simulation)
+ */
+function updateSimPlayButtonUI() {
+  const iconEl = document.getElementById('simPlayIcon');
+  const labelEl = document.getElementById('simPlayLabel');
+  if (!iconEl || !labelEl) return;
+
+  if (ManualArenaState.isSimRunning) {
+    iconEl.innerText = '⏸';
+    labelEl.innerText = 'Tạm Dừng (Pause)';
+  } else {
+    iconEl.innerText = '▶';
+    labelEl.innerText = 'Bắt Đầu Tự Động Chạy';
+  }
+}
+
+/**
+ * Hủy toàn bộ timer / interval đang chạy của cả 2 chế độ để tránh xung đột lượt đi
+ */
+function stopAllSandboxTimers() {
+  if (ManualArenaState.botThinkTimer) {
+    clearTimeout(ManualArenaState.botThinkTimer);
+    ManualArenaState.botThinkTimer = null;
+  }
+  if (ManualArenaState.simTimer) {
+    clearInterval(ManualArenaState.simTimer);
+    ManualArenaState.simTimer = null;
+  }
+  ManualArenaState.isBotThinking = false;
+  ManualArenaState.isSimRunning = false;
+  updateSimPlayButtonUI();
+}
+
+/**
  * Render bàn cờ tương tác 9x9 cùng các trạng thái highlight chọn quân & nước đi hợp lệ
  */
 function renderManualBoard() {
@@ -747,9 +806,19 @@ function renderManualBoard() {
   if (!state || ManualArenaState.cellElements.length === 0) return;
 
   const { grid, turn, turnCount, winner, flags } = state;
-  const isHumanTurn = !winner && !ManualArenaState.isBotThinking && turn === ManualArenaState.humanPlayer;
+  const isBotVsBot = ManualArenaState.sandboxMode === 'bot_vs_bot';
+  const isHumanTurn = !isBotVsBot && !winner && !ManualArenaState.isBotThinking && turn === ManualArenaState.humanPlayer;
 
-  // Cập nhật thông tin 2 phe trên Banner
+  const gridContainer = document.getElementById('manualBoardGrid');
+  if (gridContainer) {
+    if (isBotVsBot) {
+      gridContainer.classList.add('bot-vs-bot-locked');
+    } else {
+      gridContainer.classList.remove('bot-vs-bot-locked');
+    }
+  }
+
+  // Cập nhật thông tin 2 phe trên Banner tùy theo chế độ
   const counts = countPieces(grid);
   const piecesRedEl = document.getElementById('manualPiecesRed');
   const piecesBlueEl = document.getElementById('manualPiecesBlue');
@@ -762,26 +831,31 @@ function renderManualBoard() {
   if (piecesRedEl) piecesRedEl.innerText = `Quân còn lại: ${counts[PLAYER.RED]}`;
   if (piecesBlueEl) piecesBlueEl.innerText = `Quân còn lại: ${counts[PLAYER.BLUE]}`;
   if (roleRedEl) {
-    roleRedEl.innerText = ManualArenaState.humanPlayer === PLAYER.RED ? '👤 Người Chơi (Bạn)' : '🤖 Bot Đối Thủ';
+    roleRedEl.innerText = `RED: ${getSandboxRoleName(PLAYER.RED)}`;
   }
   if (roleBlueEl) {
-    roleBlueEl.innerText = ManualArenaState.humanPlayer === PLAYER.BLUE ? '👤 Người Chơi (Bạn)' : '🤖 Bot Đối Thủ';
+    roleBlueEl.innerText = `BLUE: ${getSandboxRoleName(PLAYER.BLUE)}`;
   }
   if (turnIndEl) {
     turnIndEl.innerText = `Turn ${turnCount} / ${MAX_TURNS}`;
   }
   if (swapBtnEl) {
     const sideLabel = ManualArenaState.humanPlayer === PLAYER.RED ? '🔴 RED' : '🔵 BLUE';
-    swapBtnEl.innerHTML = `<span class="icon">🔀</span> Đổi phe (Đang cầm: ${sideLabel})`;
+    const targetEntity = isBotVsBot ? 'Bot Của Bạn' : 'Bạn';
+    swapBtnEl.innerHTML = `<span class="icon">🔀</span> Đổi phe (${targetEntity}: ${sideLabel})`;
   }
   if (turnBadgeEl) {
     if (winner) {
-      turnBadgeEl.innerText = winner === 'DRAW' ? '🤝 Kết thúc: HÒA' : `🏆 Thắng: ${winner}`;
+      if (winner === 'DRAW') {
+        turnBadgeEl.innerText = '🤝 Kết thúc: HÒA';
+      } else {
+        turnBadgeEl.innerText = `🏆 Thắng: ${winner} (${getSandboxRoleName(winner)})`;
+      }
     } else if (ManualArenaState.isBotThinking) {
-      turnBadgeEl.innerText = `🤖 Bot (${ManualArenaState.botPlayer}) đang đi...`;
+      turnBadgeEl.innerText = `🤖 ${getSandboxRoleName(turn)} (${turn}) đang đi...`;
     } else {
       const icon = turn === PLAYER.RED ? '🔴 RED' : '🔵 BLUE';
-      const who = turn === ManualArenaState.humanPlayer ? 'Người chơi' : 'Bot';
+      const who = getSandboxRoleName(turn);
       turnBadgeEl.innerText = `Lượt: ${who} (${icon})`;
     }
   }
@@ -812,7 +886,7 @@ function renderManualBoard() {
         if (lastMove.to[0] === r && lastMove.to[1] === c) cellEl.classList.add('move-to');
       }
 
-      // Đánh dấu quân cờ của người chơi có thể click
+      // Đánh dấu quân cờ của người chơi có thể click (Chỉ ở Chế độ 1: Manual vs Bot)
       if (isHumanTurn && cellData && cellData.owner === ManualArenaState.humanPlayer) {
         cellEl.classList.add('clickable-piece');
       }
@@ -875,10 +949,10 @@ function setManualStatusBanner(message, bannerType = '') {
 }
 
 /**
- * Xử lý khi trận đấu thực chiến kết thúc
+ * Xử lý khi trận đấu kết thúc (Hỗ trợ cả Chế độ 1 & Chế độ 2)
  */
 function handleManualGameOver(winner, reasonText = '') {
-  ManualArenaState.isBotThinking = false;
+  stopAllSandboxTimers();
   ManualArenaState.selectedCell = null;
   ManualArenaState.legalMovesForSelected = [];
   renderManualBoard();
@@ -887,12 +961,16 @@ function handleManualGameOver(winner, reasonText = '') {
     const msg = `🤝 TRẬN ĐẤU KẾT THÚC HÒA! ${reasonText}`;
     setManualStatusBanner(msg);
     appendManualLog(msg, 'log-warn');
-  } else if (winner === ManualArenaState.humanPlayer) {
-    const msg = `🏆 CHÚC MỪNG! BẠN (${ManualArenaState.humanPlayer}) GIÀNH CHIẾN THẮNG! ${reasonText}`;
+    return;
+  }
+
+  const winnerRole = getSandboxRoleName(winner);
+  if (winner === ManualArenaState.humanPlayer) {
+    const msg = `🏆 CHIẾN THẮNG! ${winnerRole.toUpperCase()} (${winner}) GIÀNH PHẦN THẮNG! ${reasonText}`;
     setManualStatusBanner(msg, 'win-banner');
     appendManualLog(msg, 'log-win');
   } else {
-    const msg = `💥 BOT ĐỐI THỦ (${ManualArenaState.botPlayer}) GIÀNH CHIẾN THẮNG! ${reasonText}`;
+    const msg = `💥 KẾT THÚC! ${winnerRole.toUpperCase()} (${winner}) GIÀNH CHIẾN THẮNG! ${reasonText}`;
     setManualStatusBanner(msg, 'loss-banner');
     appendManualLog(msg, 'log-warn');
   }
@@ -917,23 +995,28 @@ function describeManualMoveAction(move, captured, targetFlag) {
 }
 
 /**
- * Thực thi an toàn hàm `makeMove(gameState)` từ code Bot phía Client
+ * Chuẩn hóa đối tượng gameState đầy đủ cho hàm makeMove(gameState)
  */
-function runClientTestBot(botGameState) {
-  let codeToRun = '';
-  const mode = ManualArenaState.opponentMode;
+function buildNormalizedBotState(currentState, myColor) {
+  const myFlag = myColor === PLAYER.RED ? [0, 4] : [8, 4];
+  const enemyFlag = myColor === PLAYER.RED ? [8, 4] : [0, 4];
+  const rawStateCopy = getGameStateForBot(currentState, myColor);
 
-  if (mode === 'striker') {
-    codeToRun = SAMPLE_BOTS.striker;
-  } else if (mode === 'hunter') {
-    codeToRun = SAMPLE_BOTS.hunter;
-  } else if (mode === 'random') {
-    codeToRun = SAMPLE_BOTS.random;
-  } else {
-    const testCodeEl = document.getElementById('manual-test-code');
-    codeToRun = testCodeEl ? testCodeEl.value : SAMPLE_BOTS.striker;
-  }
+  return {
+    ...rawStateCopy,
+    board: rawStateCopy.board || rawStateCopy.grid,
+    myColor,
+    myFlag: rawStateCopy.myFlag || myFlag,
+    enemyFlag: rawStateCopy.enemyFlag || enemyFlag,
+    legalMoves: rawStateCopy.legalMoves || getLegalMoves(currentState, myColor),
+    turn: currentState.turnCount
+  };
+}
 
+/**
+ * Thực thi an toàn chuỗi code JavaScript có chứa `makeMove(gameState)` phía Client
+ */
+function executeBotCodeString(codeToRun, botGameState) {
   try {
     const fn = new Function(
       'gameState',
@@ -947,14 +1030,24 @@ function runClientTestBot(botGameState) {
 }
 
 /**
- * Kích hoạt lượt đi của Bot đối thủ
+ * Lấy code của "Bot Của Bạn" đang nằm trong khung #manual-test-code
+ */
+function getUserBotCodeFromEditor() {
+  const testCodeEl = document.getElementById('manual-test-code');
+  return testCodeEl && testCodeEl.value.trim() ? testCodeEl.value : SAMPLE_BOTS.striker;
+}
+
+/**
+ * Kích hoạt lượt đi của "Bot Của Bạn" trong Chế độ 1 (Chơi Bằng Tay vs Bot)
  */
 function triggerManualBotTurn() {
+  if (ManualArenaState.sandboxMode !== 'manual_vs_bot') return;
+
   const state = ManualArenaState.gameState;
   if (!state || state.winner || state.turn !== ManualArenaState.botPlayer) return;
 
   ManualArenaState.isBotThinking = true;
-  setManualStatusBanner(`🤖 Bot (${ManualArenaState.botPlayer}) đang tính toán nước đi...`);
+  setManualStatusBanner(`🤖 Bot Của Bạn (${ManualArenaState.botPlayer}) đang tính toán nước đi...`);
   renderManualBoard();
 
   if (ManualArenaState.botThinkTimer) {
@@ -963,45 +1056,32 @@ function triggerManualBotTurn() {
 
   ManualArenaState.botThinkTimer = setTimeout(() => {
     const currentState = ManualArenaState.gameState;
-    if (!currentState || currentState.winner) return;
+    if (!currentState || currentState.winner || ManualArenaState.sandboxMode !== 'manual_vs_bot') return;
 
     const myColor = ManualArenaState.botPlayer;
-    const myFlag = myColor === PLAYER.RED ? [0, 4] : [8, 4];
-    const enemyFlag = myColor === PLAYER.RED ? [8, 4] : [0, 4];
-    const rawStateCopy = getGameStateForBot(currentState, myColor);
-
-    // Chuẩn hóa đầy đủ các trường tiện ích cho hàm makeMove(gameState)
-    const botStateCopy = {
-      ...rawStateCopy,
-      board: rawStateCopy.board || rawStateCopy.grid,
-      myColor,
-      myFlag: rawStateCopy.myFlag || myFlag,
-      enemyFlag: rawStateCopy.enemyFlag || enemyFlag,
-      legalMoves: rawStateCopy.legalMoves || getLegalMoves(currentState, myColor),
-      turn: currentState.turnCount
-    };
-
+    const botStateCopy = buildNormalizedBotState(currentState, myColor);
     const legalMoves = botStateCopy.legalMoves || [];
 
     if (legalMoves.length === 0) {
-      handleManualGameOver(ManualArenaState.humanPlayer, '(Bot hết nước đi hợp lệ)');
+      handleManualGameOver(ManualArenaState.humanPlayer, '(Bot Của Bạn hết nước đi hợp lệ)');
       return;
     }
 
-    const { move: botCandidateMove, error } = runClientTestBot(botStateCopy);
+    const userCode = getUserBotCodeFromEditor();
+    const { move: botCandidateMove, error } = executeBotCodeString(userCode, botStateCopy);
     let finalBotMove = botCandidateMove;
 
-    if (error || !isMoveLegal(currentState, finalBotMove, ManualArenaState.botPlayer)) {
+    if (error || !isMoveLegal(currentState, finalBotMove, myColor)) {
       finalBotMove = legalMoves[Math.floor(Math.random() * legalMoves.length)];
       const reason = error ? `Lỗi: ${error}` : `Nước đi không hợp lệ: ${JSON.stringify(botCandidateMove)}`;
       appendManualLog(
-        `⚠️ Bot (${ManualArenaState.botPlayer}) gặp sự cố (${reason}) -> Hệ thống chọn nước hợp lệ ngẫu nhiên.`,
+        `⚠️ Bot Của Bạn (${myColor}) gặp sự cố (${reason}) -> Hệ thống chọn nước hợp lệ ngẫu nhiên.`,
         'log-warn'
       );
     }
 
     const humanFlag = currentState.flags[ManualArenaState.humanPlayer];
-    const { newState, winner, captured } = applyMove(currentState, finalBotMove, ManualArenaState.botPlayer);
+    const { newState, winner, captured } = applyMove(currentState, finalBotMove, myColor);
 
     ManualArenaState.gameState = newState;
     ManualArenaState.lastMove = finalBotMove;
@@ -1009,7 +1089,7 @@ function triggerManualBotTurn() {
 
     const actionDesc = describeManualMoveAction(finalBotMove, captured, humanFlag);
     appendManualLog(
-      `Turn ${newState.turnCount}: Bot (${ManualArenaState.botPlayer}) [${finalBotMove.from[0]},${finalBotMove.from[1]}] -> [${finalBotMove.to[0]},${finalBotMove.to[1]}] (${actionDesc})`,
+      `Turn ${newState.turnCount}: Bot Của Bạn (${myColor}) [${finalBotMove.from[0]},${finalBotMove.from[1]}] -> [${finalBotMove.to[0]},${finalBotMove.to[1]}] (${actionDesc})`,
       'log-bot'
     );
 
@@ -1024,25 +1104,189 @@ function triggerManualBotTurn() {
     }
 
     setManualStatusBanner(
-      `🤖 Bot vừa đi [${finalBotMove.from}] ➔ [${finalBotMove.to}] (${actionDesc}). Đến lượt bạn (${ManualArenaState.humanPlayer})!`
+      `🤖 Bot Của Bạn vừa đi [${finalBotMove.from}] ➔ [${finalBotMove.to}] (${actionDesc}). Đến lượt Người Chơi (${ManualArenaState.humanPlayer})!`
     );
   }, 240);
+}
+
+// ============================================================================
+// CHẾ ĐỘ 2: BOT MẪU VS BOT CỦA BẠN (BOT VS BOT SIMULATION)
+// ============================================================================
+
+/**
+ * Thực thi đúng 1 nước đi (1 Turn) trong Chế độ 2 (Bot Mẫu vs Bot Của Bạn)
+ */
+function stepBotVsBotTurn() {
+  if (ManualArenaState.sandboxMode !== 'bot_vs_bot') return;
+
+  const currentState = ManualArenaState.gameState;
+  if (!currentState) return;
+
+  if (currentState.winner) {
+    pauseBotVsBotSimulation();
+    setManualStatusBanner('⚠️ Ván đấu đã kết thúc. Bấm "Bắt đầu lại (Reset)" để chạy ván mới!');
+    return;
+  }
+
+  const actingColor = currentState.turn;
+  const opponentColor = actingColor === PLAYER.RED ? PLAYER.BLUE : PLAYER.RED;
+  const isUserBotTurn = actingColor === ManualArenaState.humanPlayer;
+  const actorName = getSandboxRoleName(actingColor);
+
+  const botStateCopy = buildNormalizedBotState(currentState, actingColor);
+  const legalMoves = botStateCopy.legalMoves || [];
+
+  if (legalMoves.length === 0) {
+    handleManualGameOver(opponentColor, `(${actorName} hết nước đi hợp lệ)`);
+    return;
+  }
+
+  const codeToRun = isUserBotTurn
+    ? getUserBotCodeFromEditor()
+    : (SAMPLE_BOTS[ManualArenaState.sampleOpponentKey] || SAMPLE_BOTS.hunter);
+
+  const { move: candidateMove, error } = executeBotCodeString(codeToRun, botStateCopy);
+  let finalMove = candidateMove;
+
+  if (error || !isMoveLegal(currentState, finalMove, actingColor)) {
+    finalMove = legalMoves[Math.floor(Math.random() * legalMoves.length)];
+    const reason = error ? `Lỗi: ${error}` : `Nước đi không hợp lệ: ${JSON.stringify(candidateMove)}`;
+    appendManualLog(
+      `⚠️ ${actorName} (${actingColor}) gặp sự cố (${reason}) -> Hệ thống chọn nước hợp lệ ngẫu nhiên.`,
+      'log-warn'
+    );
+  }
+
+  const targetFlag = currentState.flags[opponentColor];
+  const { newState, winner, captured } = applyMove(currentState, finalMove, actingColor);
+
+  ManualArenaState.gameState = newState;
+  ManualArenaState.lastMove = finalMove;
+
+  const actionDesc = describeManualMoveAction(finalMove, captured, targetFlag);
+  appendManualLog(
+    `Turn ${newState.turnCount}: ${actorName} (${actingColor}) [${finalMove.from[0]},${finalMove.from[1]}] -> [${finalMove.to[0]},${finalMove.to[1]}] (${actionDesc})`,
+    isUserBotTurn ? 'log-human' : 'log-bot'
+  );
+
+  renderManualBoard();
+
+  if (winner) {
+    const winReason = (finalMove.to[0] === targetFlag[0] && finalMove.to[1] === targetFlag[1])
+      ? '(Chiếm cờ thành công!)'
+      : '';
+    handleManualGameOver(winner, winReason);
+    return;
+  }
+
+  const nextActor = getSandboxRoleName(newState.turn);
+  setManualStatusBanner(
+    `🤖 Turn ${newState.turnCount}: ${actorName} (${actingColor}) đi [${finalMove.from}] ➔ [${finalMove.to}] (${actionDesc}) • Tiếp theo: ${nextActor} (${newState.turn})`
+  );
+}
+
+/**
+ * Bắt đầu tự động chạy mô phỏng Bot vs Bot
+ */
+function startBotVsBotSimulation() {
+  if (ManualArenaState.sandboxMode !== 'bot_vs_bot') return;
+
+  // Nếu ván đấu đã kết thúc mà người dùng bấm chạy lại, tự động reset bàn cờ mới
+  if (!ManualArenaState.gameState || ManualArenaState.gameState.winner) {
+    resetManualMatch();
+  }
+
+  if (ManualArenaState.simTimer) {
+    clearInterval(ManualArenaState.simTimer);
+  }
+
+  ManualArenaState.isSimRunning = true;
+  updateSimPlayButtonUI();
+  renderManualBoard();
+
+  // Thực thi ngay 1 bước đầu tiên rồi tiếp tục theo chu kỳ simSpeedMs
+  stepBotVsBotTurn();
+
+  if (ManualArenaState.gameState && !ManualArenaState.gameState.winner) {
+    ManualArenaState.simTimer = setInterval(() => {
+      if (!ManualArenaState.isSimRunning || ManualArenaState.sandboxMode !== 'bot_vs_bot') {
+        pauseBotVsBotSimulation();
+        return;
+      }
+      stepBotVsBotTurn();
+    }, ManualArenaState.simSpeedMs);
+  }
+}
+
+/**
+ * Tạm dừng mô phỏng Bot vs Bot
+ */
+function pauseBotVsBotSimulation() {
+  if (ManualArenaState.simTimer) {
+    clearInterval(ManualArenaState.simTimer);
+    ManualArenaState.simTimer = null;
+  }
+  ManualArenaState.isSimRunning = false;
+  updateSimPlayButtonUI();
+  renderManualBoard();
+}
+
+/**
+ * Đảo trạng thái Chạy Tự Động / Tạm Dừng ở Chế độ 2
+ */
+function toggleBotVsBotSimulation() {
+  if (ManualArenaState.isSimRunning) {
+    pauseBotVsBotSimulation();
+    setManualStatusBanner('⏸ Đã tạm dừng mô phỏng. Bấm [▶ Bắt Đầu Tự Động Chạy] để tiếp tục hoặc [⏭ Từng Nước Đi]!');
+  } else {
+    startBotVsBotSimulation();
+  }
+}
+
+/**
+ * Chuyển đổi giữa Chế độ 1 (Chơi Bằng Tay vs Bot) và Chế độ 2 (Bot Mẫu vs Bot Của Bạn)
+ */
+function setSandboxMode(mode) {
+  if (mode !== 'manual_vs_bot' && mode !== 'bot_vs_bot') return;
+
+  ManualArenaState.sandboxMode = mode;
+  const isBotVsBot = mode === 'bot_vs_bot';
+
+  const btnMode1 = document.getElementById('modeBtnManualVsBot');
+  const btnMode2 = document.getElementById('modeBtnBotVsBot');
+  const botVsBotControls = document.getElementById('botVsBotControls');
+  const botVsBotOppGroup = document.getElementById('botVsBotOpponentGroup');
+
+  if (btnMode1) btnMode1.classList.toggle('active', !isBotVsBot);
+  if (btnMode2) btnMode2.classList.toggle('active', isBotVsBot);
+  if (botVsBotControls) botVsBotControls.style.display = isBotVsBot ? 'flex' : 'none';
+  if (botVsBotOppGroup) botVsBotOppGroup.style.display = isBotVsBot ? 'flex' : 'none';
+
+  resetManualMatch();
 }
 
 /**
  * Xử lý sự kiện khi Người chơi click vào ô (r, c) trên bàn cờ thực chiến
  */
 function handleManualCellClick(r, c) {
+  // Vô hiệu hóa thao tác click quân cờ bằng tay khi ở Chế độ 2 (Bot vs Bot)
+  if (ManualArenaState.sandboxMode === 'bot_vs_bot') {
+    setManualStatusBanner(
+      '🤖 Đang ở Chế độ 2 (Bot Mẫu vs Bot Của Bạn). Hãy dùng nút [▶ Bắt Đầu Tự Động Chạy] hoặc [⏭ Từng Nước Đi] bên dưới!'
+    );
+    return;
+  }
+
   const state = ManualArenaState.gameState;
   if (!state) return;
 
   if (state.winner) {
-    setManualStatusBanner('⚠️ Ván đấu đã kết thúc. Bấm "Bắt đầu lại (Reset Match)" để chơi ván mới!');
+    setManualStatusBanner('⚠️ Ván đấu đã kết thúc. Bấm "Bắt đầu lại (Reset)" để chơi ván mới!');
     return;
   }
 
   if (ManualArenaState.isBotThinking || state.turn !== ManualArenaState.humanPlayer) {
-    setManualStatusBanner('⏳ Đang là lượt của Bot đối thủ, vui lòng chờ...');
+    setManualStatusBanner('⏳ Đang là lượt của Bot Của Bạn, vui lòng chờ...');
     return;
   }
 
@@ -1063,7 +1307,7 @@ function handleManualCellClick(r, c) {
 
     const actionDesc = describeManualMoveAction(chosenLegalMove, captured, botFlag);
     appendManualLog(
-      `Turn ${newState.turnCount}: Người chơi (${ManualArenaState.humanPlayer}) [${chosenLegalMove.from[0]},${chosenLegalMove.from[1]}] -> [${chosenLegalMove.to[0]},${chosenLegalMove.to[1]}] (${actionDesc})`,
+      `Turn ${newState.turnCount}: Người Chơi (${ManualArenaState.humanPlayer}) [${chosenLegalMove.from[0]},${chosenLegalMove.from[1]}] -> [${chosenLegalMove.to[0]},${chosenLegalMove.to[1]}] (${actionDesc})`,
       'log-human'
     );
 
@@ -1077,7 +1321,7 @@ function handleManualCellClick(r, c) {
       return;
     }
 
-    // Chuyển lượt sang cho Bot
+    // Chuyển lượt sang cho Bot Của Bạn
     triggerManualBotTurn();
     return;
   }
@@ -1127,37 +1371,38 @@ function handleManualCellClick(r, c) {
 }
 
 /**
- * Khởi động / Reset ván đấu luyện tập bằng tay
+ * Khởi động / Reset ván đấu trong Phòng Thử Nghiệm Bot (Hủy mọi timer đang chạy)
  */
 function resetManualMatch() {
-  if (ManualArenaState.botThinkTimer) {
-    clearTimeout(ManualArenaState.botThinkTimer);
-    ManualArenaState.botThinkTimer = null;
-  }
+  stopAllSandboxTimers();
 
   ManualArenaState.gameState = initBoard();
   ManualArenaState.selectedCell = null;
   ManualArenaState.legalMovesForSelected = [];
   ManualArenaState.lastMove = null;
-  ManualArenaState.isBotThinking = false;
 
   // Xóa mảng lịch sử cũ khi bắt đầu ván mới
   matchMoveHistory = [];
   renderMoveHistory();
 
-  const modeSelect = document.getElementById('manualOpponentSelect');
-  const modeLabel = modeSelect
-    ? modeSelect.options[modeSelect.selectedIndex]?.text || 'Custom Bot'
-    : 'Custom Bot';
+  const redRole = getSandboxRoleName(PLAYER.RED);
+  const blueRole = getSandboxRoleName(PLAYER.BLUE);
 
   appendManualLog(
-    `🎮 Bắt đầu ván mới! Bạn cầm ${ManualArenaState.humanPlayer} vs Đối thủ: ${modeLabel}`,
+    `🧪 Bắt đầu ván mới! RED: ${redRole} vs BLUE: ${blueRole}`,
     'log-human'
   );
 
   renderManualBoard();
 
-  // Vì RED luôn đi trước theo luật chuẩn: nếu người chơi chọn cầm BLUE, Bot (RED) sẽ đi nước đầu tiên
+  if (ManualArenaState.sandboxMode === 'bot_vs_bot') {
+    setManualStatusBanner(
+      `🤖 Sẵn sàng mô phỏng: RED (${redRole}) vs BLUE (${blueRole}). Bấm [▶ Bắt Đầu Tự Động Chạy] hoặc [⏭ Từng Nước Đi]!`
+    );
+    return;
+  }
+
+  // Chế độ 1 (Manual vs Bot): RED luôn đi trước. Nếu người chơi cầm BLUE, Bot (RED) sẽ đi nước đầu tiên
   if (ManualArenaState.humanPlayer === PLAYER.BLUE) {
     triggerManualBotTurn();
   } else {
@@ -1168,7 +1413,7 @@ function resetManualMatch() {
 }
 
 /**
- * Đổi phe cho Người chơi (Cầm RED <-> Cầm BLUE) và bắt đầu ván mới
+ * Đổi phe (RED <-> BLUE) và bắt đầu ván mới
  */
 function swapManualSide() {
   if (ManualArenaState.humanPlayer === PLAYER.RED) {
@@ -1182,11 +1427,10 @@ function swapManualSide() {
 }
 
 /**
- * Nạp code vào khung #manual-test-code và cập nhật chế độ đối thủ
+ * Nạp code vào khung #manual-test-code
  */
 function loadCodeIntoManualBench(botKey) {
   const testEditor = document.getElementById('manual-test-code');
-  const oppSelect = document.getElementById('manualOpponentSelect');
   const modeBadge = document.getElementById('manualBotModeBadge');
   if (!testEditor) return;
 
@@ -1195,24 +1439,16 @@ function loadCodeIntoManualBench(botKey) {
     testEditor.value = submitEditor && submitEditor.value.trim()
       ? submitEditor.value
       : SAMPLE_BOTS.striker;
-    ManualArenaState.opponentMode = 'custom';
-    if (oppSelect) oppSelect.value = 'custom';
-    if (modeBadge) modeBadge.innerText = 'Synced from Submit Tab';
+    if (modeBadge) modeBadge.innerText = 'Bot Của Bạn (Synced)';
   } else if (botKey === 'random') {
     testEditor.value = SAMPLE_BOTS.random;
-    ManualArenaState.opponentMode = 'custom';
-    if (oppSelect) oppSelect.value = 'custom';
-    if (modeBadge) modeBadge.innerText = 'Sample: Random';
+    if (modeBadge) modeBadge.innerText = 'Bot Của Bạn (Mẫu Random)';
   } else if (botKey === 'hunter') {
     testEditor.value = SAMPLE_BOTS.hunter;
-    ManualArenaState.opponentMode = 'custom';
-    if (oppSelect) oppSelect.value = 'custom';
-    if (modeBadge) modeBadge.innerText = 'Sample: Hunter';
+    if (modeBadge) modeBadge.innerText = 'Bot Của Bạn (Mẫu Hunter)';
   } else if (botKey === 'striker') {
     testEditor.value = SAMPLE_BOTS.striker;
-    ManualArenaState.opponentMode = 'custom';
-    if (oppSelect) oppSelect.value = 'custom';
-    if (modeBadge) modeBadge.innerText = 'Sample: Striker';
+    if (modeBadge) modeBadge.innerText = 'Bot Của Bạn (Mẫu Striker)';
   }
 }
 
@@ -1229,7 +1465,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // 2. Nạp code mẫu ban đầu
   loadSampleBot('striker');
 
-  // 2b. Khởi tạo Bàn cờ Thực Chiến (Tab 4: Chơi Bằng Tay)
+  // 2b. Khởi tạo Phòng Thử Nghiệm Bot (Tab 4: #view-sandbox)
   initManualBoardDOM();
   loadCodeIntoManualBench('sync');
   resetManualMatch();
@@ -1347,7 +1583,61 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // 7b. Sự kiện cho Tab 4: Chơi Bằng Tay & Bot Test Bench
+  // 7b. Sự kiện cho Tab 4: Phòng Thử Nghiệm Bot (Test Bot Sandbox)
+  const modeBtnManualVsBot = document.getElementById('modeBtnManualVsBot');
+  const modeBtnBotVsBot = document.getElementById('modeBtnBotVsBot');
+
+  if (modeBtnManualVsBot) {
+    modeBtnManualVsBot.addEventListener('click', () => setSandboxMode('manual_vs_bot'));
+  }
+  if (modeBtnBotVsBot) {
+    modeBtnBotVsBot.addEventListener('click', () => setSandboxMode('bot_vs_bot'));
+  }
+
+  const sandboxOpponentSelect = document.getElementById('sandboxOpponentSelect');
+  if (sandboxOpponentSelect) {
+    sandboxOpponentSelect.addEventListener('change', (e) => {
+      ManualArenaState.sampleOpponentKey = e.target.value;
+      resetManualMatch();
+    });
+  }
+
+  const btnSimPlayPause = document.getElementById('btnSimPlayPause');
+  if (btnSimPlayPause) {
+    btnSimPlayPause.addEventListener('click', () => toggleBotVsBotSimulation());
+  }
+
+  const btnSimStepNext = document.getElementById('btnSimStepNext');
+  if (btnSimStepNext) {
+    btnSimStepNext.addEventListener('click', () => {
+      pauseBotVsBotSimulation();
+      stepBotVsBotTurn();
+    });
+  }
+
+  const simSpeedRange = document.getElementById('simSpeedRange');
+  const simSpeedLabel = document.getElementById('simSpeedLabel');
+  if (simSpeedRange) {
+    simSpeedRange.addEventListener('input', (e) => {
+      const ms = parseInt(e.target.value, 10) || 500;
+      ManualArenaState.simSpeedMs = ms;
+      if (simSpeedLabel) {
+        simSpeedLabel.innerText = `${(ms / 1000).toFixed(1)}s / turn`;
+      }
+      // Nếu đang tự động chạy thì cập nhật lại interval ngay lập tức
+      if (ManualArenaState.isSimRunning) {
+        if (ManualArenaState.simTimer) clearInterval(ManualArenaState.simTimer);
+        ManualArenaState.simTimer = setInterval(() => {
+          if (!ManualArenaState.isSimRunning || ManualArenaState.sandboxMode !== 'bot_vs_bot') {
+            pauseBotVsBotSimulation();
+            return;
+          }
+          stepBotVsBotTurn();
+        }, ManualArenaState.simSpeedMs);
+      }
+    });
+  }
+
   const btnManualReset = document.getElementById('btnManualReset');
   if (btnManualReset) {
     btnManualReset.addEventListener('click', () => resetManualMatch());
@@ -1358,33 +1648,11 @@ document.addEventListener('DOMContentLoaded', () => {
     btnManualSwapSide.addEventListener('click', () => swapManualSide());
   }
 
-  const manualOpponentSelect = document.getElementById('manualOpponentSelect');
-  const manualBotModeBadge = document.getElementById('manualBotModeBadge');
-  if (manualOpponentSelect) {
-    manualOpponentSelect.addEventListener('change', (e) => {
-      const mode = e.target.value;
-      ManualArenaState.opponentMode = mode;
-      const testEditor = document.getElementById('manual-test-code');
-      if (mode === 'striker' && testEditor) {
-        testEditor.value = SAMPLE_BOTS.striker;
-        if (manualBotModeBadge) manualBotModeBadge.innerText = 'System: Striker';
-      } else if (mode === 'hunter' && testEditor) {
-        testEditor.value = SAMPLE_BOTS.hunter;
-        if (manualBotModeBadge) manualBotModeBadge.innerText = 'System: Hunter';
-      } else if (mode === 'random' && testEditor) {
-        testEditor.value = SAMPLE_BOTS.random;
-        if (manualBotModeBadge) manualBotModeBadge.innerText = 'System: Random';
-      } else {
-        if (manualBotModeBadge) manualBotModeBadge.innerText = 'Custom Code';
-      }
-    });
-  }
-
   const btnManualApplyPlay = document.getElementById('btnManualApplyPlay');
   if (btnManualApplyPlay) {
     btnManualApplyPlay.addEventListener('click', () => {
-      if (manualOpponentSelect) {
-        ManualArenaState.opponentMode = manualOpponentSelect.value;
+      if (sandboxOpponentSelect) {
+        ManualArenaState.sampleOpponentKey = sandboxOpponentSelect.value;
       }
       resetManualMatch();
     });
@@ -1455,6 +1723,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // 8. ĐIỀU HƯỚNG 4 VIEWS CHÍNH (TAB/VIEW ARCHITECTURE)
   function switchTab(viewId) {
+    // Tạm dừng mô phỏng Bot vs Bot nếu rời khỏi tab Sandbox
+    if (viewId !== 'view-sandbox' && ManualArenaState.isSimRunning) {
+      pauseBotVsBotSimulation();
+    }
+
     // Ẩn tất cả views
     document.querySelectorAll('.tab-view').forEach(view => {
       view.classList.remove('active');
@@ -1477,8 +1750,8 @@ document.addEventListener('DOMContentLoaded', () => {
       targetNavBtn.classList.add('active');
     }
 
-    // Nếu chuyển sang tab Chơi Bằng Tay và ô code test đang trống thì đồng bộ từ Tab Nộp Code
-    if (viewId === 'view-manual') {
+    // Nếu chuyển sang tab Phòng Thử Nghiệm Bot và ô code test đang trống thì đồng bộ từ Tab Nộp Code
+    if (viewId === 'view-sandbox') {
       const testEditor = document.getElementById('manual-test-code');
       if (testEditor && !testEditor.value.trim()) {
         loadCodeIntoManualBench('sync');
@@ -1503,9 +1776,9 @@ document.addEventListener('DOMContentLoaded', () => {
     btnCtaSubmit.addEventListener('click', () => switchTab('view-submit'));
   }
 
-  const btnCtaManual = document.getElementById('btn-cta-manual');
-  if (btnCtaManual) {
-    btnCtaManual.addEventListener('click', () => switchTab('view-manual'));
+  const btnCtaSandbox = document.getElementById('btn-cta-sandbox') || document.getElementById('btn-cta-manual');
+  if (btnCtaSandbox) {
+    btnCtaSandbox.addEventListener('click', () => switchTab('view-sandbox'));
   }
 
   const btnCtaLeaderboard = document.getElementById('btn-cta-leaderboard');
