@@ -359,19 +359,34 @@ export function applyMove(state, move, player = state.turn) {
  * @returns {Object} Deep copy của game state cùng các thông tin bổ sung tiện ích
  */
 export function getGameStateForBot(state, player = state.turn) {
+  const clonedGrid = state.grid.map(row => row.map(cell => (cell ? { ...cell } : null)));
+  const myColor = player || state.turn || PLAYER.RED;
+  const enemyColor = myColor === PLAYER.RED ? PLAYER.BLUE : PLAYER.RED;
+  const myFlag = state.flags && state.flags[myColor]
+    ? [...state.flags[myColor]]
+    : (myColor === PLAYER.RED ? [0, 4] : [8, 4]);
+  const enemyFlag = state.flags && state.flags[enemyColor]
+    ? [...state.flags[enemyColor]]
+    : (myColor === PLAYER.RED ? [8, 4] : [0, 4]);
+
   return {
+    board: clonedGrid,
+    grid: clonedGrid,
     boardSize: BOARD_SIZE,
     maxTurns: MAX_TURNS,
-    myPlayer: player,
-    turn: state.turn,
+    myColor,
+    myPlayer: myColor,
+    myFlag,
+    enemyFlag,
+    turn: state.turnCount,
+    turnPlayer: state.turn,
     turnCount: state.turnCount,
     winner: state.winner,
     flags: {
       [PLAYER.RED]: [...state.flags[PLAYER.RED]],
       [PLAYER.BLUE]: [...state.flags[PLAYER.BLUE]]
     },
-    grid: state.grid.map(row => row.map(cell => (cell ? { ...cell } : null))),
-    legalMoves: getLegalMoves(state, player),
+    legalMoves: getLegalMoves(state, myColor),
     pieceCounts: countPieces(state.grid),
     lastMove: state.history.length > 0 ? { ...state.history[state.history.length - 1] } : null
   };

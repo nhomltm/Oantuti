@@ -21,7 +21,17 @@
  *    - Thông báo nước đi, quân bị ăn, người chiến thắng rõ ràng.
  */
 
-import { initBoard, PLAYER, PIECE_TYPE, countPieces } from './boardEngine.js';
+import {
+  initBoard,
+  PLAYER,
+  PIECE_TYPE,
+  MAX_TURNS,
+  countPieces,
+  getLegalMoves,
+  isMoveLegal,
+  applyMove,
+  getGameStateForBot
+} from './boardEngine.js';
 import { SAMPLE_BOTS, STARTER_TEMPLATES } from './sampleBots.js';
 
 // ============================================================================
@@ -40,6 +50,20 @@ const AppState = {
   cellDataCache: [],          // Cache trạng thái ô cờ để diff render (60fps)
   pollingInterval: null,      // Polling timer cập nhật Leaderboard
   lastQueueStatus: ''         // Trạng thái hàng đợi
+};
+
+// State riêng cho Tab 4: Chơi Bằng Tay (Luyện Tập / Test Bot)
+const ManualArenaState = {
+  gameState: null,            // Trạng thái bàn cờ thực chiến từ initBoard()
+  humanPlayer: PLAYER.RED,    // Phe của Người chơi (PLAYER.RED | PLAYER.BLUE)
+  botPlayer: PLAYER.BLUE,     // Phe của Bot đối thủ
+  selectedCell: null,         // Tọa độ [r, c] quân cờ đang được Người chơi chọn
+  legalMovesForSelected: [],  // Danh sách các nước đi hợp lệ của quân đang chọn
+  lastMove: null,             // Nước đi gần nhất { from: [r,c], to: [r,c] }
+  isBotThinking: false,       // Khóa bàn cờ khi Bot đang suy nghĩ
+  botThinkTimer: null,        // Timer tạo nhịp đi tự nhiên cho Bot
+  opponentMode: 'custom',     // 'custom' | 'striker' | 'hunter' | 'random'
+  cellElements: []            // Mảng 81 ô DOM [r][c] của bàn cờ #manualBoardGrid
 };
 
 // Biểu tượng quân cờ
@@ -358,18 +382,38 @@ function renderLeaderboardTable(leaderboard, recentMatches = []) {
     else if (index === 1) rankBadge = `<span class="rank-badge rank-2">🥈</span>`;
     else if (index === 2) rankBadge = `<span class="rank-badge rank-3">🥉</span>`;
 
-    // Tìm trận gần nhất có bot này tham gia để gắn nút xem replay
-    const botMatch = recentMatches.find(m => m.botRed.id === item.botId || m.botBlue.id === item.botId);
+    const botId = item.botId || item.id || item.playerId;
+    const displayBotName = item.botName || item.name || item.playerName || 'Unnamed Bot';
+    const displayAuthor = item.author || item.playerName || 'Anonymous';
+
+    // Xác định matchId để xem Replay:
+    // 1. Ưu tiên lấy `item.lastMatchId` đã được server lưu cho cả Red và Blue
+    // 2. Nếu thiếu `lastMatchId`, tìm trận gần nhất có chứa `botId` trong `recentMatches`
+    // 3. Nếu vẫn thiếu nhưng hệ thống có lịch sử trận đấu, lấy trận mẫu gần nhất
+    const matchedInHistory = Array.isArray(recentMatches)
+      ? recentMatches.find(
+          m =>
+            m?.botRed?.id === botId ||
+            m?.botBlue?.id === botId ||
+            m?.botRed?.botId === botId ||
+            m?.botBlue?.botId === botId
+        )
+      : null;
+
+    const replayMatchId =
+      item.lastMatchId ||
+      (matchedInHistory ? matchedInHistory.id : null) ||
+      (Array.isArray(recentMatches) && recentMatches.length > 0 ? recentMatches[0].id : null);
 
     tr.innerHTML = `
       <td>${rankBadge}</td>
-      <td><strong>${item.botName}</strong></td>
-      <td>${item.author}</td>
+      <td><strong>${displayBotName}</strong></td>
+      <td>${displayAuthor}</td>
       <td><strong style="color: var(--accent-gold);">${item.score}</strong></td>
       <td>${item.wins}/${item.draws}/${item.losses}</td>
       <td class="${item.errors > 0 ? 'error-badge' : ''}">${item.errors}</td>
       <td>
-        ${botMatch ? `<button class="btn btn-xs btn-outline btn-watch-match" data-match-id="${botMatch.id}">Xem Replay ▶</button>` : `<span style="color:var(--text-muted)">-</span>`}
+        ${replayMatchId ? `<button class="btn btn-xs btn-outline btn-watch-match" data-match-id="${replayMatchId}">Xem Replay ▶</button>` : `<span style="color:var(--text-muted)">-</span>`}
       </td>
     `;
     tbody.appendChild(tr);
@@ -568,17 +612,627 @@ export function loadSampleBot(botKey) {
 }
 
 // ============================================================================
+// TAB 4: CHƠI BẰNG TAY - LUYỆN TẬP / TEST BOT (#view-manual)
+// ============================================================================
+
+/**
+ * Khởi tạo 81 ô DOM cho bàn cờ tương tác #manualBoardGrid
+ */
+function initManualBoardDOM() {
+  const gridContainer = document.getElementById('manualBoardGrid');
+  if (!gridContainer) return;
+
+  gridContainer.innerHTML = '';
+  ManualArenaState.cellElements = [];
+
+  for (let r = 0; r < 9; r++) {
+    const rowElements = [];
+    for (let c = 0; c < 9; c++) {
+      const cell = document.createElement('div');
+      cell.className = 'cell';
+      cell.dataset.row = r;
+      cell.dataset.col = c;
+
+      if (r === 0 && c === 4) {
+        cell.classList.add('flag-red');
+        const flagMarker = document.createElement('span');
+        flagMarker.className = 'flag-marker';
+        flagMarker.innerText = '🚩';
+        cell.appendChild(flagMarker);
+      } else if (r === 8 && c === 4) {
+        cell.classList.add('flag-blue');
+        const flagMarker = document.createElement('span');
+        flagMarker.className = 'flag-marker';
+        flagMarker.innerText = '🏳️';
+        cell.appendChild(flagMarker);
+      }
+
+      cell.addEventListener('click', () => handleManualCellClick(r, c));
+
+      gridContainer.appendChild(cell);
+      rowElements.push(cell);
+    }
+    ManualArenaState.cellElements.push(rowElements);
+  }
+}
+
+// Mảng lưu trữ toàn bộ lịch sử nước đi của ván đấu thực chiến hiện tại
+let matchMoveHistory = [];
+
+/**
+ * Render bảng log chính (#manualMoveHistory):
+ * Chỉ cắt lấy tối đa 4 phần tử cuối cùng (`matchMoveHistory.slice(-4)`)
+ * để giữ giao diện gọn gàng, không phải cuộn trang.
+ */
+function renderMoveHistory() {
+  const logContainer = document.getElementById('manualMoveHistory');
+  const viewAllBtn = document.getElementById('btn-view-all-logs');
+
+  if (viewAllBtn) {
+    viewAllBtn.innerText = matchMoveHistory.length > 0
+      ? `📜 Xem Toàn Bộ Lịch Sử (${matchMoveHistory.length})`
+      : '📜 Xem Toàn Bộ Lịch Sử';
+  }
+
+  if (!logContainer) return;
+  logContainer.innerHTML = '';
+
+  if (matchMoveHistory.length === 0) {
+    logContainer.innerHTML = `<div class="log-empty">Chưa có nước đi nào. Hãy click chọn quân cờ bên trái để bắt đầu!</div>`;
+    return;
+  }
+
+  // Chỉ lấy 4 nước đi gần nhất
+  const recentFourMoves = matchMoveHistory.slice(-4);
+  for (const item of recentFourMoves) {
+    const entry = document.createElement('div');
+    entry.className = `log-entry ${item.typeClass}`;
+    entry.innerText = item.text;
+    logContainer.appendChild(entry);
+  }
+
+  // Nếu Modal toàn bộ lịch sử đang mở, cập nhật luôn nội dung trong Modal
+  const modal = document.getElementById('fullHistoryModal');
+  if (modal && modal.open) {
+    renderFullHistoryModal();
+  }
+}
+
+/**
+ * Render toàn bộ `matchMoveHistory` vào bên trong Modal (#fullHistoryModalList)
+ */
+function renderFullHistoryModal() {
+  const modalList = document.getElementById('fullHistoryModalList');
+  const countBadge = document.getElementById('historyModalCountBadge');
+
+  if (countBadge) {
+    countBadge.innerText = `${matchMoveHistory.length} mục`;
+  }
+
+  if (!modalList) return;
+  modalList.innerHTML = '';
+
+  if (matchMoveHistory.length === 0) {
+    modalList.innerHTML = `<div class="log-empty">Chưa có dữ liệu lịch sử nước đi trong ván này.</div>`;
+    return;
+  }
+
+  matchMoveHistory.forEach((item, idx) => {
+    const entry = document.createElement('div');
+    entry.className = `log-entry ${item.typeClass}`;
+    entry.innerText = `#${idx + 1} • ${item.text}`;
+    modalList.appendChild(entry);
+  });
+
+  modalList.scrollTop = modalList.scrollHeight;
+}
+
+/**
+ * Ghi thêm 1 dòng vào mảng `matchMoveHistory` và cập nhật UI (4 dòng mới nhất)
+ */
+function appendManualLog(text, typeClass = 'log-human') {
+  matchMoveHistory.push({
+    text,
+    typeClass,
+    timestamp: Date.now()
+  });
+  renderMoveHistory();
+}
+
+/**
+ * Render bàn cờ tương tác 9x9 cùng các trạng thái highlight chọn quân & nước đi hợp lệ
+ */
+function renderManualBoard() {
+  const state = ManualArenaState.gameState;
+  if (!state || ManualArenaState.cellElements.length === 0) return;
+
+  const { grid, turn, turnCount, winner, flags } = state;
+  const isHumanTurn = !winner && !ManualArenaState.isBotThinking && turn === ManualArenaState.humanPlayer;
+
+  // Cập nhật thông tin 2 phe trên Banner
+  const counts = countPieces(grid);
+  const piecesRedEl = document.getElementById('manualPiecesRed');
+  const piecesBlueEl = document.getElementById('manualPiecesBlue');
+  const roleRedEl = document.getElementById('manualRoleRed');
+  const roleBlueEl = document.getElementById('manualRoleBlue');
+  const turnIndEl = document.getElementById('manualTurnIndicator');
+  const turnBadgeEl = document.getElementById('manualTurnBadge');
+  const swapBtnEl = document.getElementById('btnManualSwapSide');
+
+  if (piecesRedEl) piecesRedEl.innerText = `Quân còn lại: ${counts[PLAYER.RED]}`;
+  if (piecesBlueEl) piecesBlueEl.innerText = `Quân còn lại: ${counts[PLAYER.BLUE]}`;
+  if (roleRedEl) {
+    roleRedEl.innerText = ManualArenaState.humanPlayer === PLAYER.RED ? '👤 Người Chơi (Bạn)' : '🤖 Bot Đối Thủ';
+  }
+  if (roleBlueEl) {
+    roleBlueEl.innerText = ManualArenaState.humanPlayer === PLAYER.BLUE ? '👤 Người Chơi (Bạn)' : '🤖 Bot Đối Thủ';
+  }
+  if (turnIndEl) {
+    turnIndEl.innerText = `Turn ${turnCount} / ${MAX_TURNS}`;
+  }
+  if (swapBtnEl) {
+    const sideLabel = ManualArenaState.humanPlayer === PLAYER.RED ? '🔴 RED' : '🔵 BLUE';
+    swapBtnEl.innerHTML = `<span class="icon">🔀</span> Đổi phe (Đang cầm: ${sideLabel})`;
+  }
+  if (turnBadgeEl) {
+    if (winner) {
+      turnBadgeEl.innerText = winner === 'DRAW' ? '🤝 Kết thúc: HÒA' : `🏆 Thắng: ${winner}`;
+    } else if (ManualArenaState.isBotThinking) {
+      turnBadgeEl.innerText = `🤖 Bot (${ManualArenaState.botPlayer}) đang đi...`;
+    } else {
+      const icon = turn === PLAYER.RED ? '🔴 RED' : '🔵 BLUE';
+      const who = turn === ManualArenaState.humanPlayer ? 'Người chơi' : 'Bot';
+      turnBadgeEl.innerText = `Lượt: ${who} (${icon})`;
+    }
+  }
+
+  const lastMove = ManualArenaState.lastMove;
+  const selected = ManualArenaState.selectedCell;
+  const legalTargets = ManualArenaState.legalMovesForSelected;
+  const enemyFlag = flags[ManualArenaState.botPlayer];
+
+  for (let r = 0; r < 9; r++) {
+    for (let c = 0; c < 9; c++) {
+      const cellEl = ManualArenaState.cellElements[r][c];
+      const cellData = grid[r][c];
+
+      // Xóa các class trạng thái cũ
+      cellEl.classList.remove(
+        'move-from',
+        'move-to',
+        'clickable-piece',
+        'cell-selected',
+        'cell-legal-move',
+        'cell-legal-capture'
+      );
+
+      // Highlight nước đi vừa thực hiện
+      if (lastMove) {
+        if (lastMove.from[0] === r && lastMove.from[1] === c) cellEl.classList.add('move-from');
+        if (lastMove.to[0] === r && lastMove.to[1] === c) cellEl.classList.add('move-to');
+      }
+
+      // Đánh dấu quân cờ của người chơi có thể click
+      if (isHumanTurn && cellData && cellData.owner === ManualArenaState.humanPlayer) {
+        cellEl.classList.add('clickable-piece');
+      }
+
+      // Highlight ô quân cờ đang chọn
+      if (selected && selected[0] === r && selected[1] === c) {
+        cellEl.classList.add('cell-selected');
+      }
+
+      // Highlight các ô nước đi hợp lệ (màu xanh)
+      const isLegalTarget = legalTargets.some(m => m.to[0] === r && m.to[1] === c);
+      if (isLegalTarget) {
+        const isEnemyFlagCell = enemyFlag[0] === r && enemyFlag[1] === c;
+        if (cellData || isEnemyFlagCell) {
+          cellEl.classList.add('cell-legal-capture');
+        } else {
+          cellEl.classList.add('cell-legal-move');
+        }
+      }
+
+      // Render quân cờ bên trong ô
+      const oldPiece = cellEl.querySelector('.piece');
+      if (oldPiece) {
+        cellEl.removeChild(oldPiece);
+      }
+
+      if (cellData) {
+        const pieceDiv = document.createElement('div');
+        pieceDiv.className = `piece ${cellData.owner === PLAYER.RED ? 'piece-red' : 'piece-blue'}`;
+
+        const iconSpan = document.createElement('span');
+        iconSpan.className = 'piece-icon';
+        iconSpan.innerText = PIECE_ICONS[cellData.type] || '?';
+
+        const labelSpan = document.createElement('span');
+        labelSpan.className = 'piece-label';
+        labelSpan.innerText = cellData.type;
+
+        pieceDiv.appendChild(iconSpan);
+        pieceDiv.appendChild(labelSpan);
+        pieceDiv.title = `${cellData.owner}: ${PIECE_LABELS[cellData.type]} [${r},${c}]`;
+
+        cellEl.appendChild(pieceDiv);
+      }
+    }
+  }
+}
+
+/**
+ * Cập nhật thanh thông báo trạng thái trận đấu thực chiến (#manualStatusBanner)
+ */
+function setManualStatusBanner(message, bannerType = '') {
+  const banner = document.getElementById('manualStatusBanner');
+  if (!banner) return;
+  banner.classList.remove('win-banner', 'loss-banner');
+  if (bannerType) {
+    banner.classList.add(bannerType);
+  }
+  banner.innerText = message;
+}
+
+/**
+ * Xử lý khi trận đấu thực chiến kết thúc
+ */
+function handleManualGameOver(winner, reasonText = '') {
+  ManualArenaState.isBotThinking = false;
+  ManualArenaState.selectedCell = null;
+  ManualArenaState.legalMovesForSelected = [];
+  renderManualBoard();
+
+  if (winner === 'DRAW') {
+    const msg = `🤝 TRẬN ĐẤU KẾT THÚC HÒA! ${reasonText}`;
+    setManualStatusBanner(msg);
+    appendManualLog(msg, 'log-warn');
+  } else if (winner === ManualArenaState.humanPlayer) {
+    const msg = `🏆 CHÚC MỪNG! BẠN (${ManualArenaState.humanPlayer}) GIÀNH CHIẾN THẮNG! ${reasonText}`;
+    setManualStatusBanner(msg, 'win-banner');
+    appendManualLog(msg, 'log-win');
+  } else {
+    const msg = `💥 BOT ĐỐI THỦ (${ManualArenaState.botPlayer}) GIÀNH CHIẾN THẮNG! ${reasonText}`;
+    setManualStatusBanner(msg, 'loss-banner');
+    appendManualLog(msg, 'log-warn');
+  }
+}
+
+/**
+ * Mô tả hành động của nước đi để ghi vào Move History
+ */
+function describeManualMoveAction(move, captured, targetFlag) {
+  if (move.to[0] === targetFlag[0] && move.to[1] === targetFlag[1]) {
+    return '🚩 CƯỚP CỜ ĐỐI PHƯƠNG!';
+  }
+  if (captured) {
+    const pName = captured.type === PIECE_TYPE.ROCK
+      ? 'Búa ✊'
+      : captured.type === PIECE_TYPE.PAPER
+        ? 'Bao ✋'
+        : 'Kéo ✌️';
+    return `⚡ Ăn ${pName}`;
+  }
+  return 'Tiến công';
+}
+
+/**
+ * Thực thi an toàn hàm `makeMove(gameState)` từ code Bot phía Client
+ */
+function runClientTestBot(botGameState) {
+  let codeToRun = '';
+  const mode = ManualArenaState.opponentMode;
+
+  if (mode === 'striker') {
+    codeToRun = SAMPLE_BOTS.striker;
+  } else if (mode === 'hunter') {
+    codeToRun = SAMPLE_BOTS.hunter;
+  } else if (mode === 'random') {
+    codeToRun = SAMPLE_BOTS.random;
+  } else {
+    const testCodeEl = document.getElementById('manual-test-code');
+    codeToRun = testCodeEl ? testCodeEl.value : SAMPLE_BOTS.striker;
+  }
+
+  try {
+    const fn = new Function(
+      'gameState',
+      `"use strict";\n${codeToRun}\n; if (typeof makeMove === 'function') { return makeMove(gameState); } return null;`
+    );
+    const resultMove = fn(botGameState);
+    return { move: resultMove, error: null };
+  } catch (err) {
+    return { move: null, error: err.message };
+  }
+}
+
+/**
+ * Kích hoạt lượt đi của Bot đối thủ
+ */
+function triggerManualBotTurn() {
+  const state = ManualArenaState.gameState;
+  if (!state || state.winner || state.turn !== ManualArenaState.botPlayer) return;
+
+  ManualArenaState.isBotThinking = true;
+  setManualStatusBanner(`🤖 Bot (${ManualArenaState.botPlayer}) đang tính toán nước đi...`);
+  renderManualBoard();
+
+  if (ManualArenaState.botThinkTimer) {
+    clearTimeout(ManualArenaState.botThinkTimer);
+  }
+
+  ManualArenaState.botThinkTimer = setTimeout(() => {
+    const currentState = ManualArenaState.gameState;
+    if (!currentState || currentState.winner) return;
+
+    const myColor = ManualArenaState.botPlayer;
+    const myFlag = myColor === PLAYER.RED ? [0, 4] : [8, 4];
+    const enemyFlag = myColor === PLAYER.RED ? [8, 4] : [0, 4];
+    const rawStateCopy = getGameStateForBot(currentState, myColor);
+
+    // Chuẩn hóa đầy đủ các trường tiện ích cho hàm makeMove(gameState)
+    const botStateCopy = {
+      ...rawStateCopy,
+      board: rawStateCopy.board || rawStateCopy.grid,
+      myColor,
+      myFlag: rawStateCopy.myFlag || myFlag,
+      enemyFlag: rawStateCopy.enemyFlag || enemyFlag,
+      legalMoves: rawStateCopy.legalMoves || getLegalMoves(currentState, myColor),
+      turn: currentState.turnCount
+    };
+
+    const legalMoves = botStateCopy.legalMoves || [];
+
+    if (legalMoves.length === 0) {
+      handleManualGameOver(ManualArenaState.humanPlayer, '(Bot hết nước đi hợp lệ)');
+      return;
+    }
+
+    const { move: botCandidateMove, error } = runClientTestBot(botStateCopy);
+    let finalBotMove = botCandidateMove;
+
+    if (error || !isMoveLegal(currentState, finalBotMove, ManualArenaState.botPlayer)) {
+      finalBotMove = legalMoves[Math.floor(Math.random() * legalMoves.length)];
+      const reason = error ? `Lỗi: ${error}` : `Nước đi không hợp lệ: ${JSON.stringify(botCandidateMove)}`;
+      appendManualLog(
+        `⚠️ Bot (${ManualArenaState.botPlayer}) gặp sự cố (${reason}) -> Hệ thống chọn nước hợp lệ ngẫu nhiên.`,
+        'log-warn'
+      );
+    }
+
+    const humanFlag = currentState.flags[ManualArenaState.humanPlayer];
+    const { newState, winner, captured } = applyMove(currentState, finalBotMove, ManualArenaState.botPlayer);
+
+    ManualArenaState.gameState = newState;
+    ManualArenaState.lastMove = finalBotMove;
+    ManualArenaState.isBotThinking = false;
+
+    const actionDesc = describeManualMoveAction(finalBotMove, captured, humanFlag);
+    appendManualLog(
+      `Turn ${newState.turnCount}: Bot (${ManualArenaState.botPlayer}) [${finalBotMove.from[0]},${finalBotMove.from[1]}] -> [${finalBotMove.to[0]},${finalBotMove.to[1]}] (${actionDesc})`,
+      'log-bot'
+    );
+
+    renderManualBoard();
+
+    if (winner) {
+      const winReason = (finalBotMove.to[0] === humanFlag[0] && finalBotMove.to[1] === humanFlag[1])
+        ? '(Chiếm cờ thành công!)'
+        : '';
+      handleManualGameOver(winner, winReason);
+      return;
+    }
+
+    setManualStatusBanner(
+      `🤖 Bot vừa đi [${finalBotMove.from}] ➔ [${finalBotMove.to}] (${actionDesc}). Đến lượt bạn (${ManualArenaState.humanPlayer})!`
+    );
+  }, 240);
+}
+
+/**
+ * Xử lý sự kiện khi Người chơi click vào ô (r, c) trên bàn cờ thực chiến
+ */
+function handleManualCellClick(r, c) {
+  const state = ManualArenaState.gameState;
+  if (!state) return;
+
+  if (state.winner) {
+    setManualStatusBanner('⚠️ Ván đấu đã kết thúc. Bấm "Bắt đầu lại (Reset Match)" để chơi ván mới!');
+    return;
+  }
+
+  if (ManualArenaState.isBotThinking || state.turn !== ManualArenaState.humanPlayer) {
+    setManualStatusBanner('⏳ Đang là lượt của Bot đối thủ, vui lòng chờ...');
+    return;
+  }
+
+  // 1. Kiểm tra xem ô vừa click có phải là 1 ô đích hợp lệ (đang được highlight màu xanh) không
+  const chosenLegalMove = ManualArenaState.legalMovesForSelected.find(
+    m => m.to[0] === r && m.to[1] === c
+  );
+
+  if (chosenLegalMove) {
+    // Thực hiện nước đi của Người chơi!
+    const botFlag = state.flags[ManualArenaState.botPlayer];
+    const { newState, winner, captured } = applyMove(state, chosenLegalMove, ManualArenaState.humanPlayer);
+
+    ManualArenaState.gameState = newState;
+    ManualArenaState.selectedCell = null;
+    ManualArenaState.legalMovesForSelected = [];
+    ManualArenaState.lastMove = chosenLegalMove;
+
+    const actionDesc = describeManualMoveAction(chosenLegalMove, captured, botFlag);
+    appendManualLog(
+      `Turn ${newState.turnCount}: Người chơi (${ManualArenaState.humanPlayer}) [${chosenLegalMove.from[0]},${chosenLegalMove.from[1]}] -> [${chosenLegalMove.to[0]},${chosenLegalMove.to[1]}] (${actionDesc})`,
+      'log-human'
+    );
+
+    renderManualBoard();
+
+    if (winner) {
+      const winReason = (chosenLegalMove.to[0] === botFlag[0] && chosenLegalMove.to[1] === botFlag[1])
+        ? '(Cướp cờ đối phương!)'
+        : '';
+      handleManualGameOver(winner, winReason);
+      return;
+    }
+
+    // Chuyển lượt sang cho Bot
+    triggerManualBotTurn();
+    return;
+  }
+
+  // 2. Nếu click vào quân cờ thuộc phe Người chơi -> Chọn quân cờ đó và highlight các nước đi hợp lệ
+  const clickedPiece = state.grid[r][c];
+  if (clickedPiece && clickedPiece.owner === ManualArenaState.humanPlayer) {
+    // Nếu click lại đúng quân đang chọn thì bỏ chọn
+    if (
+      ManualArenaState.selectedCell &&
+      ManualArenaState.selectedCell[0] === r &&
+      ManualArenaState.selectedCell[1] === c
+    ) {
+      ManualArenaState.selectedCell = null;
+      ManualArenaState.legalMovesForSelected = [];
+      setManualStatusBanner('👉 Hãy click chọn 1 quân cờ của phe bạn để xem các nước đi hợp lệ (màu xanh)!');
+      renderManualBoard();
+      return;
+    }
+
+    ManualArenaState.selectedCell = [r, c];
+    const allHumanLegalMoves = getLegalMoves(state, ManualArenaState.humanPlayer);
+    ManualArenaState.legalMovesForSelected = allHumanLegalMoves.filter(
+      m => m.from[0] === r && m.from[1] === c
+    );
+
+    const countMoves = ManualArenaState.legalMovesForSelected.length;
+    if (countMoves > 0) {
+      setManualStatusBanner(
+        `✅ Đã chọn quân ${PIECE_LABELS[clickedPiece.type]} tại [${r},${c}] — Có ${countMoves} nước đi hợp lệ (ô màu xanh). Click vào ô màu xanh để đi!`
+      );
+    } else {
+      setManualStatusBanner(
+        `⚠️ Quân ${PIECE_LABELS[clickedPiece.type]} tại [${r},${c}] hiện đang bị cản, không có nước đi hợp lệ. Hãy chọn quân khác!`
+      );
+    }
+
+    renderManualBoard();
+    return;
+  }
+
+  // 3. Click vào ô trống không hợp lệ hoặc quân đối phương ngoài tầm ăn -> Bỏ chọn
+  ManualArenaState.selectedCell = null;
+  ManualArenaState.legalMovesForSelected = [];
+  setManualStatusBanner('👉 Hãy click chọn 1 quân cờ thuộc phe của bạn để di chuyển!');
+  renderManualBoard();
+}
+
+/**
+ * Khởi động / Reset ván đấu luyện tập bằng tay
+ */
+function resetManualMatch() {
+  if (ManualArenaState.botThinkTimer) {
+    clearTimeout(ManualArenaState.botThinkTimer);
+    ManualArenaState.botThinkTimer = null;
+  }
+
+  ManualArenaState.gameState = initBoard();
+  ManualArenaState.selectedCell = null;
+  ManualArenaState.legalMovesForSelected = [];
+  ManualArenaState.lastMove = null;
+  ManualArenaState.isBotThinking = false;
+
+  // Xóa mảng lịch sử cũ khi bắt đầu ván mới
+  matchMoveHistory = [];
+  renderMoveHistory();
+
+  const modeSelect = document.getElementById('manualOpponentSelect');
+  const modeLabel = modeSelect
+    ? modeSelect.options[modeSelect.selectedIndex]?.text || 'Custom Bot'
+    : 'Custom Bot';
+
+  appendManualLog(
+    `🎮 Bắt đầu ván mới! Bạn cầm ${ManualArenaState.humanPlayer} vs Đối thủ: ${modeLabel}`,
+    'log-human'
+  );
+
+  renderManualBoard();
+
+  // Vì RED luôn đi trước theo luật chuẩn: nếu người chơi chọn cầm BLUE, Bot (RED) sẽ đi nước đầu tiên
+  if (ManualArenaState.humanPlayer === PLAYER.BLUE) {
+    triggerManualBotTurn();
+  } else {
+    setManualStatusBanner(
+      '👉 Bạn cầm quân 🔴 RED (đi trước). Hãy click chọn 1 quân cờ của bạn để xem nước đi hợp lệ!'
+    );
+  }
+}
+
+/**
+ * Đổi phe cho Người chơi (Cầm RED <-> Cầm BLUE) và bắt đầu ván mới
+ */
+function swapManualSide() {
+  if (ManualArenaState.humanPlayer === PLAYER.RED) {
+    ManualArenaState.humanPlayer = PLAYER.BLUE;
+    ManualArenaState.botPlayer = PLAYER.RED;
+  } else {
+    ManualArenaState.humanPlayer = PLAYER.RED;
+    ManualArenaState.botPlayer = PLAYER.BLUE;
+  }
+  resetManualMatch();
+}
+
+/**
+ * Nạp code vào khung #manual-test-code và cập nhật chế độ đối thủ
+ */
+function loadCodeIntoManualBench(botKey) {
+  const testEditor = document.getElementById('manual-test-code');
+  const oppSelect = document.getElementById('manualOpponentSelect');
+  const modeBadge = document.getElementById('manualBotModeBadge');
+  if (!testEditor) return;
+
+  if (botKey === 'sync') {
+    const submitEditor = document.getElementById('bot-code');
+    testEditor.value = submitEditor && submitEditor.value.trim()
+      ? submitEditor.value
+      : SAMPLE_BOTS.striker;
+    ManualArenaState.opponentMode = 'custom';
+    if (oppSelect) oppSelect.value = 'custom';
+    if (modeBadge) modeBadge.innerText = 'Synced from Submit Tab';
+  } else if (botKey === 'random') {
+    testEditor.value = SAMPLE_BOTS.random;
+    ManualArenaState.opponentMode = 'custom';
+    if (oppSelect) oppSelect.value = 'custom';
+    if (modeBadge) modeBadge.innerText = 'Sample: Random';
+  } else if (botKey === 'hunter') {
+    testEditor.value = SAMPLE_BOTS.hunter;
+    ManualArenaState.opponentMode = 'custom';
+    if (oppSelect) oppSelect.value = 'custom';
+    if (modeBadge) modeBadge.innerText = 'Sample: Hunter';
+  } else if (botKey === 'striker') {
+    testEditor.value = SAMPLE_BOTS.striker;
+    ManualArenaState.opponentMode = 'custom';
+    if (oppSelect) oppSelect.value = 'custom';
+    if (modeBadge) modeBadge.innerText = 'Sample: Striker';
+  }
+}
+
+// ============================================================================
 // KHỞI ĐỘNG ỨNG DỤNG & GẮN SỰ KIỆN DOM
 // ============================================================================
 document.addEventListener('DOMContentLoaded', () => {
   console.log('🚀 [UI] DOMContentLoaded: Bắt đầu khởi tạo giao diện...');
 
-  // 1. Dựng bàn cờ 81 ô 1 lần duy nhất
+  // 1. Dựng bàn cờ Replay 81 ô 1 lần duy nhất
   initBoardDOM();
   renderBoard(initBoard().grid);
 
   // 2. Nạp code mẫu ban đầu
   loadSampleBot('striker');
+
+  // 2b. Khởi tạo Bàn cờ Thực Chiến (Tab 4: Chơi Bằng Tay)
+  initManualBoardDOM();
+  loadCodeIntoManualBench('sync');
+  resetManualMatch();
 
   // 3. Sự kiện thay đổi dropdown Ngôn ngữ lập trình
   const langSelect = document.getElementById('languageSelect');
@@ -671,44 +1325,214 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // 7. Tabs Bảng điểm & Trận gần đây
+  // 7. Tabs Bảng điểm & Trận gần đây (Sub-tabs trong Tab 3)
   const tabBtnLeaderboard = document.getElementById('tabBtnLeaderboard');
   const tabBtnMatches = document.getElementById('tabBtnMatches');
   const tabPaneLeaderboard = document.getElementById('tabPaneLeaderboard');
   const tabPaneMatches = document.getElementById('tabPaneMatches');
 
-  tabBtnLeaderboard.addEventListener('click', () => {
-    tabBtnLeaderboard.classList.add('active');
-    tabBtnMatches.classList.remove('active');
-    tabPaneLeaderboard.classList.add('active');
-    tabPaneMatches.classList.remove('active');
+  if (tabBtnLeaderboard && tabBtnMatches && tabPaneLeaderboard && tabPaneMatches) {
+    tabBtnLeaderboard.addEventListener('click', () => {
+      tabBtnLeaderboard.classList.add('active');
+      tabBtnMatches.classList.remove('active');
+      tabPaneLeaderboard.classList.add('active');
+      tabPaneMatches.classList.remove('active');
+    });
+
+    tabBtnMatches.addEventListener('click', () => {
+      tabBtnMatches.classList.add('active');
+      tabBtnLeaderboard.classList.remove('active');
+      tabPaneMatches.classList.add('active');
+      tabPaneLeaderboard.classList.remove('active');
+    });
+  }
+
+  // 7b. Sự kiện cho Tab 4: Chơi Bằng Tay & Bot Test Bench
+  const btnManualReset = document.getElementById('btnManualReset');
+  if (btnManualReset) {
+    btnManualReset.addEventListener('click', () => resetManualMatch());
+  }
+
+  const btnManualSwapSide = document.getElementById('btnManualSwapSide');
+  if (btnManualSwapSide) {
+    btnManualSwapSide.addEventListener('click', () => swapManualSide());
+  }
+
+  const manualOpponentSelect = document.getElementById('manualOpponentSelect');
+  const manualBotModeBadge = document.getElementById('manualBotModeBadge');
+  if (manualOpponentSelect) {
+    manualOpponentSelect.addEventListener('change', (e) => {
+      const mode = e.target.value;
+      ManualArenaState.opponentMode = mode;
+      const testEditor = document.getElementById('manual-test-code');
+      if (mode === 'striker' && testEditor) {
+        testEditor.value = SAMPLE_BOTS.striker;
+        if (manualBotModeBadge) manualBotModeBadge.innerText = 'System: Striker';
+      } else if (mode === 'hunter' && testEditor) {
+        testEditor.value = SAMPLE_BOTS.hunter;
+        if (manualBotModeBadge) manualBotModeBadge.innerText = 'System: Hunter';
+      } else if (mode === 'random' && testEditor) {
+        testEditor.value = SAMPLE_BOTS.random;
+        if (manualBotModeBadge) manualBotModeBadge.innerText = 'System: Random';
+      } else {
+        if (manualBotModeBadge) manualBotModeBadge.innerText = 'Custom Code';
+      }
+    });
+  }
+
+  const btnManualApplyPlay = document.getElementById('btnManualApplyPlay');
+  if (btnManualApplyPlay) {
+    btnManualApplyPlay.addEventListener('click', () => {
+      if (manualOpponentSelect) {
+        ManualArenaState.opponentMode = manualOpponentSelect.value;
+      }
+      resetManualMatch();
+    });
+  }
+
+  const btnManualSyncCode = document.getElementById('btnManualSyncCode');
+  if (btnManualSyncCode) {
+    btnManualSyncCode.addEventListener('click', () => loadCodeIntoManualBench('sync'));
+  }
+
+  const btnManualLoadRandom = document.getElementById('btnManualLoadRandom');
+  if (btnManualLoadRandom) {
+    btnManualLoadRandom.addEventListener('click', () => loadCodeIntoManualBench('random'));
+  }
+
+  const btnManualLoadHunter = document.getElementById('btnManualLoadHunter');
+  if (btnManualLoadHunter) {
+    btnManualLoadHunter.addEventListener('click', () => loadCodeIntoManualBench('hunter'));
+  }
+
+  const btnManualLoadStriker = document.getElementById('btnManualLoadStriker');
+  if (btnManualLoadStriker) {
+    btnManualLoadStriker.addEventListener('click', () => loadCodeIntoManualBench('striker'));
+  }
+
+  const btnClearManualLog = document.getElementById('btnClearManualLog');
+  if (btnClearManualLog) {
+    btnClearManualLog.addEventListener('click', () => {
+      matchMoveHistory = [];
+      renderMoveHistory();
+      renderFullHistoryModal();
+    });
+  }
+
+  // Mở / Đóng Modal Xem Toàn Bộ Lịch Sử (#fullHistoryModal)
+  const btnViewAllLogs = document.getElementById('btn-view-all-logs');
+  const fullHistoryModal = document.getElementById('fullHistoryModal');
+  const btnCloseHistoryModal = document.getElementById('btnCloseHistoryModal');
+
+  if (btnViewAllLogs && fullHistoryModal) {
+    btnViewAllLogs.addEventListener('click', () => {
+      renderFullHistoryModal();
+      fullHistoryModal.showModal();
+    });
+  }
+
+  if (btnCloseHistoryModal && fullHistoryModal) {
+    btnCloseHistoryModal.addEventListener('click', () => {
+      fullHistoryModal.close();
+    });
+  }
+
+  // Fallback đóng Modal khi click ra ngoài vùng tối (backdrop) cho trình duyệt chưa hỗ trợ closedBy
+  if (fullHistoryModal && !('closedBy' in HTMLDialogElement.prototype)) {
+    fullHistoryModal.addEventListener('click', (event) => {
+      if (event.target !== fullHistoryModal) return;
+      const rect = fullHistoryModal.getBoundingClientRect();
+      const isDialogContent = (
+        rect.top <= event.clientY &&
+        event.clientY <= rect.top + rect.height &&
+        rect.left <= event.clientX &&
+        event.clientX <= rect.left + rect.width
+      );
+      if (isDialogContent) return;
+      fullHistoryModal.close();
+    });
+  }
+
+  // 8. ĐIỀU HƯỚNG 4 VIEWS CHÍNH (TAB/VIEW ARCHITECTURE)
+  function switchTab(viewId) {
+    // Ẩn tất cả views
+    document.querySelectorAll('.tab-view').forEach(view => {
+      view.classList.remove('active');
+    });
+
+    // Bỏ active tất cả nav buttons
+    document.querySelectorAll('.nav-tab-btn').forEach(btn => {
+      btn.classList.remove('active');
+    });
+
+    // Kích hoạt view được chọn
+    const targetView = document.getElementById(viewId);
+    if (targetView) {
+      targetView.classList.add('active');
+    }
+
+    // Kích hoạt nav button tương ứng
+    const targetNavBtn = document.querySelector(`.nav-tab-btn[data-target="${viewId}"]`);
+    if (targetNavBtn) {
+      targetNavBtn.classList.add('active');
+    }
+
+    // Nếu chuyển sang tab Chơi Bằng Tay và ô code test đang trống thì đồng bộ từ Tab Nộp Code
+    if (viewId === 'view-manual') {
+      const testEditor = document.getElementById('manual-test-code');
+      if (testEditor && !testEditor.value.trim()) {
+        loadCodeIntoManualBench('sync');
+      }
+      renderManualBoard();
+    }
+
+    console.log(`🧭 [Navigation] Chuyển sang View: ${viewId}`);
+  }
+
+  // Gắn sự kiện cho 4 nút trên Navbar
+  document.querySelectorAll('.nav-tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const targetViewId = btn.dataset.target;
+      switchTab(targetViewId);
+    });
   });
 
-  tabBtnMatches.addEventListener('click', () => {
-    tabBtnMatches.classList.add('active');
-    tabBtnLeaderboard.classList.remove('active');
-    tabPaneMatches.classList.add('active');
-    tabPaneLeaderboard.classList.remove('active');
-  });
+  // Gắn sự kiện cho các nút Call-To-Action (CTA) ở Tab 1
+  const btnCtaSubmit = document.getElementById('btn-cta-submit');
+  if (btnCtaSubmit) {
+    btnCtaSubmit.addEventListener('click', () => switchTab('view-submit'));
+  }
 
-  // 8. Đổi Theme Sáng / Tối
+  const btnCtaManual = document.getElementById('btn-cta-manual');
+  if (btnCtaManual) {
+    btnCtaManual.addEventListener('click', () => switchTab('view-manual'));
+  }
+
+  const btnCtaLeaderboard = document.getElementById('btn-cta-leaderboard');
+  if (btnCtaLeaderboard) {
+    btnCtaLeaderboard.addEventListener('click', () => switchTab('view-leaderboard'));
+  }
+
+  // 9. Đổi Theme Sáng / Tối
   const themeToggleBtn = document.getElementById('themeToggleBtn');
   const themeIcon = document.getElementById('themeIcon');
-  themeToggleBtn.addEventListener('click', () => {
-    if (AppState.theme === 'dark') {
-      document.body.classList.remove('theme-dark');
-      document.body.classList.add('theme-light');
-      AppState.theme = 'light';
-      themeIcon.innerText = '🌙';
-    } else {
-      document.body.classList.remove('theme-light');
-      document.body.classList.add('theme-dark');
-      AppState.theme = 'dark';
-      themeIcon.innerText = '☀️';
-    }
-  });
+  if (themeToggleBtn && themeIcon) {
+    themeToggleBtn.addEventListener('click', () => {
+      if (AppState.theme === 'dark') {
+        document.body.classList.remove('theme-dark');
+        document.body.classList.add('theme-light');
+        AppState.theme = 'light';
+        themeIcon.innerText = '🌙';
+      } else {
+        document.body.classList.remove('theme-light');
+        document.body.classList.add('theme-dark');
+        AppState.theme = 'dark';
+        themeIcon.innerText = '☀️';
+      }
+    });
+  }
 
-  // 9. Bắt đầu polling Live Leaderboard mỗi 2 giây
+  // 10. Bắt đầu polling Live Leaderboard mỗi 2 giây
   fetchLeaderboard();
   AppState.pollingInterval = setInterval(fetchLeaderboard, 2000);
 });

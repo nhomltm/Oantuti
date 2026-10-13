@@ -3,22 +3,39 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Chiến Thuật Oẳn Tù Tì - Arena 9x9 Đa Người Chơi</title>
+  <title>RPS ARENA 9x9 - Đấu Trường Trí Tuệ Bot</title>
   <link rel="stylesheet" href="style.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 </head>
 <body class="theme-dark">
-  <!-- HEADER -->
+  <!-- 1. THANH ĐIỀU HƯỚNG CHUNG (NAVBAR HEADER) -->
   <header class="app-header">
     <div class="header-brand">
       <div class="logo-badge">⚔️</div>
       <div class="brand-text">
-        <h1>RPS ARENA 9×9 MULTIPLAYER</h1>
-        <p class="subtitle">Chiến Thuật Oẳn Tù Tì • Đấu Trường Trí Tuệ Bot</p>
+        <h1>RPS ARENA 9×9</h1>
+        <p class="subtitle">Đấu Trường Trí Tuệ Bot • Leo Tháp Theo Cụm</p>
       </div>
     </div>
+
+    <!-- 4 Nút chuyển Tab chính -->
+    <nav class="nav-tabs-bar">
+      <button class="nav-tab-btn active" id="tab-guide" data-target="view-guide">
+        <span class="tab-icon">🏠</span> Trang Chủ & Hướng Dẫn
+      </button>
+      <button class="nav-tab-btn" id="tab-submit" data-target="view-submit">
+        <span class="tab-icon">💻</span> Nộp Code Bot
+      </button>
+      <button class="nav-tab-btn" id="tab-manual" data-target="view-manual">
+        <span class="tab-icon">🎮</span> Chơi Thử Bằng Tay
+      </button>
+      <button class="nav-tab-btn" id="tab-leaderboard" data-target="view-leaderboard">
+        <span class="tab-icon">🏆</span> Bảng Xếp Hạng & Khán Đài
+      </button>
+    </nav>
+
     <div class="header-actions">
       <div class="status-indicator" id="arenaStatus">
         <span class="status-dot"></span>
@@ -30,199 +47,471 @@
     </div>
   </header>
 
-  <!-- MAIN 3-COLUMN CONTAINER -->
-  <main class="app-container">
-    <!-- LEFT PANEL: CODE EDITOR & ROOM SETTINGS -->
-    <aside class="panel left-panel">
-      <div class="panel-header">
-        <div class="panel-title">
-          <span class="icon">💻</span>
-          <h2>Nộp Code Bot</h2>
-        </div>
-        <span class="badge badge-primary" id="roomBadge">Phòng: PUBLIC</span>
-      </div>
+  <!-- 2. CONTAINER CHÍNH CHỨA 4 VIEWS -->
+  <main class="views-wrapper">
 
-      <div class="panel-body">
-        <div class="form-group">
-          <label for="bot-name">Tên Bot (Bot Name):</label>
-          <input type="text" id="bot-name" class="form-control" value="CyberWarrior" placeholder="Nhập tên bot hiển thị..." />
-        </div>
-
-        <div class="form-group">
-          <label for="bot-author">Tác giả / Tên người chơi (Author Name):</label>
-          <input type="text" id="bot-author" class="form-control" value="Challenger" placeholder="Nhập tên người chơi..." />
-        </div>
-
-        <div class="form-group">
-          <label for="languageSelect">Ngôn ngữ lập trình (Language):</label>
-          <select id="languageSelect" class="form-control">
-            <option value="javascript">JavaScript (Node.js Sandbox)</option>
-            <option value="python">Python 3 (Standard I/O)</option>
-            <option value="cpp">C++ (g++ -O3 Standard I/O)</option>
-          </select>
-        </div>
-
-        <div class="form-group">
-          <label for="roomTypeSelect">Chọn Phòng Đấu:</label>
-          <div class="room-selector-row">
-            <select id="roomTypeSelect" class="form-control">
-              <option value="PUBLIC">Phòng Chung (Public Arena)</option>
-              <option value="CUSTOM">Nhập Room ID Riêng...</option>
-            </select>
-            <button id="createRoomBtn" class="btn btn-sm btn-secondary" title="Tạo mã phòng riêng mới">+ Tạo Phòng</button>
+    <!-- ======================================================================
+         TAB 1: TRANG CHỦ & HƯỚNG DẪN CHƠI (#view-guide)
+         ====================================================================== -->
+    <section class="tab-view active" id="view-guide">
+      <div class="guide-container">
+        <!-- Hero Banner -->
+        <div class="hero-card">
+          <div class="hero-badge">🚀 MÔ HÌNH LEO THÁP THEO CỤM (TIERED CLUSTER MATCHMAKING)</div>
+          <h2>Chào Mừng Đến Với RPS Arena 9×9</h2>
+          <p class="hero-desc">
+            Đấu trường lập trình trí tuệ nhân tạo độc đáo kết hợp giữa <strong>cờ chiến thuật 9x9</strong> và <strong>luật tương khắc Oẳn Tù Tì</strong>. 
+            Viết thuật toán bot bằng JavaScript, Python hoặc C++, vượt qua các cụm 10 đối thủ ở đáy bảng và leo thẳng lên ngôi vương Top 1!
+          </p>
+          <div class="hero-actions">
+            <button class="btn btn-primary btn-lg pulse-hover" id="btn-cta-submit">
+              <span class="icon">⚡</span> Tham Gia Nộp Bot Ngay
+            </button>
+            <button class="btn btn-secondary btn-lg" id="btn-cta-manual">
+              <span class="icon">🎮</span> Chơi Thử Bằng Tay
+            </button>
+            <button class="btn btn-secondary btn-lg" id="btn-cta-leaderboard">
+              <span class="icon">🏆</span> Xem Bảng Xếp Hạng
+            </button>
           </div>
         </div>
 
-        <div class="form-group" id="customRoomGroup" style="display: none;">
-          <label for="customRoomInput">Mã Room ID:</label>
-          <div class="custom-room-row">
-            <input type="text" id="customRoomInput" class="form-control" placeholder="Ví dụ: ROOM_ABC123" />
-            <button id="joinRoomBtn" class="btn btn-sm btn-primary">Vào</button>
+        <!-- 3 Feature Cards -->
+        <div class="features-grid">
+          <div class="feature-card">
+            <div class="feature-icon">🛡️</div>
+            <h3>Quy Tắc Di Chuyển & Cờ</h3>
+            <p>
+              Bàn cờ <strong>9x9</strong> (81 ô) thoáng rộng với trung tâm là chiến trường mở. 
+              Mỗi quân cờ di chuyển <strong>1 ô theo 8 hướng</strong> (như Vua trong cờ vua).
+            </p>
+            <ul>
+              <li>🔴 <strong>Cờ RED</strong> tại ô <code>[0, 4]</code> được các quân tiền tiêu che chắn.</li>
+              <li>🔵 <strong>Cờ BLUE</strong> tại ô <code>[8, 4]</code> đối xứng hoàn toàn.</li>
+              <li><strong>Chiếm cờ đối thủ:</strong> Quân phe mình bước vào ô cờ đối phương $\rightarrow$ Thắng ngay lập tức!</li>
+            </ul>
+          </div>
+
+          <div class="feature-card">
+            <div class="feature-icon">✂️✊✋</div>
+            <h3>Luật Tương Khắc Oẳn Tù Tì</h3>
+            <p>
+              Gặp quân địch, kết quả chạm trán được định đoạt theo luật tương khắc cổ điển:
+            </p>
+            <ul>
+              <li><strong>Búa (R)</strong> đập vỡ <strong>Kéo (S)</strong></li>
+              <li><strong>Kéo (S)</strong> cắt đứt <strong>Bao (P)</strong></li>
+              <li><strong>Bao (P)</strong> bọc trọn <strong>Búa (R)</strong></li>
+              <li>Quân <strong>cùng loại</strong> cản đường nhau, không thể ăn nhau.</li>
+              <li>Không được đi đè lên quân đồng minh hoặc cờ phe mình.</li>
+            </ul>
+          </div>
+
+          <div class="feature-card">
+            <div class="feature-icon">🪜</div>
+            <h3>Cơ Chế Leo Tháp 10 Người</h3>
+            <p>
+              Khi nộp bot, hệ thống ghép cặp bot của bạn với <strong>cụm 10 đối thủ</strong> tương ứng:
+            </p>
+            <ul>
+              <li>Người mới bắt đầu ở <strong>Cụm Đáy Tháp</strong>.</li>
+              <li>Thắng $\ge 50\%$ hoặc lọt <strong>Top 3 cụm</strong> $\rightarrow$ Tự động leo tiếp lên cụm thứ hạng cao hơn!</li>
+              <li>Hệ thống lưu trữ bền vững (Persistence) giữ trọn điểm số và lịch sử thi đấu kể cả khi server restart.</li>
+            </ul>
           </div>
         </div>
 
-        <!-- Trạng thái Hàng Đợi (Queue Status) -->
-        <div class="queue-status-card" id="queueStatusCard">
-          <div class="queue-status-header">
-            <span class="queue-pulse"></span>
-            <span class="queue-title" id="queueStatusTitle">Trạng thái Hàng Đợi (Batch)</span>
+        <!-- Contract Spec Card -->
+        <div class="contract-card">
+          <div class="contract-header">
+            <h3>📑 Chuẩn Hóa Giao Tiếp Bot (Contract I/O)</h3>
+            <span class="badge badge-primary">Standard JSON Format</span>
           </div>
-          <div class="queue-status-desc" id="queueStatusDesc">Sẵn sàng nộp code vào giải đấu.</div>
-        </div>
+          <p class="contract-desc">
+            Mỗi lượt đi, Bot nhận trạng thái bàn cờ <code>gameState</code> và phản hồi nước đi hợp lệ duy nhất:
+          </p>
+          <div class="code-preview-box">
+            <pre><code>// Output bắt buộc (JSON):
+{ "from": [r, c], "to": [r, c] }
 
-        <div class="form-group code-group">
-          <div class="code-header">
-            <label for="bot-code">Thuật Toán Bot (Mã Nguồn):</label>
-            <div class="sample-loader">
-              <button type="button" id="btn-load-random" class="btn btn-xs btn-outline" title="Nạp bot Ngẫu Nhiên">Bot Ngẫu Nhiên</button>
-              <button type="button" id="btn-load-hunter" class="btn btn-xs btn-outline" title="Nạp bot Săn Mồi">Bot Săn Mồi</button>
-              <button type="button" id="btn-load-striker" class="btn btn-xs btn-outline" title="Nạp bot Chiếm Cờ / Vừa Công Vừa Thủ">Bot Chiếm Cờ</button>
-            </div>
+// JavaScript: return makeMove(gameState);
+// Python 3:   sys.stdin.read() -> print(json.dumps({"from": [r, c], "to": [r, c]}))
+// C++:        std::cin >> input -> std::cout << "{\"from\":[r,c],\"to\":[r,c]}"</code></pre>
           </div>
-          <div class="editor-wrapper">
-            <textarea id="bot-code" class="code-editor" spellcheck="false"></textarea>
-          </div>
-          <p class="code-hint">💡 Bot nhận <code>gameState</code>, trả về <code>{ from: [r,c], to: [r,c] }</code>.</p>
-        </div>
-
-        <div class="action-buttons">
-          <button type="button" id="submitBotBtn" class="btn btn-primary btn-block btn-lg pulse-hover">
-            <span class="icon">🚀</span> Nộp / Cập Nhật Code Bot
-          </button>
-        </div>
-      </div>
-    </aside>
-
-    <!-- CENTER PANEL: 9X9 BOARD & REPLAY CONTROLS -->
-    <section class="panel center-panel">
-      <!-- MATCH BANNER -->
-      <div class="match-banner" id="matchBanner">
-        <div class="team-card team-red" id="cardRed">
-          <div class="team-flag-tag">🔴 RED (Cờ [0,4])</div>
-          <div class="team-name" id="nameRed">Đang chờ...</div>
-          <div class="team-score" id="piecesRed">Quân: 6</div>
-        </div>
-        <div class="match-vs">
-          <div class="vs-badge">VS</div>
-          <div class="match-turn-label" id="turnIndicator">Turn 0 / 0</div>
-        </div>
-        <div class="team-card team-blue" id="cardBlue">
-          <div class="team-flag-tag">🔵 BLUE (Cờ [8,4])</div>
-          <div class="team-name" id="nameBlue">Đang chờ...</div>
-          <div class="team-score" id="piecesBlue">Quân: 6</div>
-        </div>
-      </div>
-
-      <!-- 9X9 BOARD CONTAINER -->
-      <div class="board-wrapper">
-        <div id="boardGrid" class="board-grid">
-          <!-- 81 ô được tạo 1 lần duy nhất trong DOM, tối ưu 60fps -->
-        </div>
-      </div>
-
-      <!-- REPLAY CONTROLLER -->
-      <div class="replay-controls">
-        <div class="slider-wrapper">
-          <span class="step-label" id="lblPrevTurn">0</span>
-          <input type="range" id="turnSlider" min="0" max="0" value="0" class="turn-slider" />
-          <span class="step-label" id="lblMaxTurn">0</span>
-        </div>
-        <div class="button-row">
-          <button id="btnFirst" class="btn btn-secondary" title="Về đầu">⏮</button>
-          <button id="btnPrev" class="btn btn-secondary" title="Lùi 1 bước">◀</button>
-          <button id="btnPlayPause" class="btn btn-primary play-btn" title="Phát / Dừng">
-            <span id="playIcon">▶</span> Play Replay
-          </button>
-          <button id="btnNext" class="btn btn-secondary" title="Tiến 1 bước">▶</button>
-          <button id="btnLast" class="btn btn-secondary" title="Đến cuối">⏭</button>
-          <div class="speed-control">
-            <label for="speedSelect">Speed:</label>
-            <select id="speedSelect" class="form-control form-control-sm">
-              <option value="800">0.5x (Chậm)</option>
-              <option value="400" selected>1.0x (Chuẩn)</option>
-              <option value="150">2.5x (Nhanh)</option>
-              <option value="50">Chớp mắt</option>
-            </select>
-          </div>
-        </div>
-        <div class="move-announcer" id="moveAnnouncer">
-          Trận đấu chưa nạp. Nhấn <strong>"Xem Replay"</strong> ở bảng bên phải để phát trận đấu!
         </div>
       </div>
     </section>
 
-    <!-- RIGHT PANEL: LIVE LEADERBOARD & RECENT MATCHES -->
-    <aside class="panel right-panel">
-      <div class="panel-header">
-        <div class="panel-title">
-          <span class="icon">🏆</span>
-          <h2>Bảng Xếp Hạng Trực Tiếp</h2>
-        </div>
-        <button id="refreshLbBtn" class="btn btn-sm btn-outline" title="Làm mới Bảng xếp hạng">🔄</button>
-      </div>
 
-      <div class="tabs-nav">
-        <button class="tab-btn active" id="tabBtnLeaderboard">Top Bot</button>
-        <button class="tab-btn" id="tabBtnMatches">Trận Gần Đây</button>
-      </div>
+    <!-- ======================================================================
+         TAB 2: KHU NỘP CODE RIÊNG BIỆT (#view-submit)
+         ====================================================================== -->
+    <section class="tab-view" id="view-submit">
+      <div class="submit-layout-container">
+        <!-- Khung cấu hình bot & hàng đợi -->
+        <div class="submit-sidebar">
+          <div class="panel">
+            <div class="panel-header">
+              <div class="panel-title">
+                <span class="icon">⚙️</span>
+                <h2>Thông Tin Bot</h2>
+              </div>
+              <span class="badge badge-primary" id="roomBadge">Phòng: PUBLIC</span>
+            </div>
 
-      <div class="panel-body tab-content-body">
-        <!-- TAB 1: LIVE LEADERBOARD -->
-        <div class="tab-pane active" id="tabPaneLeaderboard">
-          <div class="table-container">
-            <table class="leaderboard-table" id="leaderboardTable">
-              <thead>
-                <tr>
-                  <th>#</th>
-                  <th>Bot</th>
-                  <th>Tác giả</th>
-                  <th>Điểm</th>
-                  <th>T/H/B</th>
-                  <th>Lỗi</th>
-                  <th>Hành động</th>
-                </tr>
-              </thead>
-              <tbody id="leaderboardTbody">
-                <tr>
-                  <td colspan="7" class="empty-cell">Đang tải bảng xếp hạng...</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-          <div class="scoring-rules">
-            <small>⭐ Thắng: <strong>+3</strong> | Hòa: <strong>+1</strong> | Thua: <strong>0</strong>. Mỗi batch giải đấu tối đa 10 bot.</small>
+            <div class="panel-body">
+              <div class="form-group">
+                <label for="bot-name">Tên Bot (Bot Name):</label>
+                <input type="text" id="bot-name" class="form-control" value="CyberWarrior" placeholder="Nhập tên bot hiển thị..." />
+              </div>
+
+              <div class="form-group">
+                <label for="bot-author">Tác giả / Người chơi (Author Name):</label>
+                <input type="text" id="bot-author" class="form-control" value="Challenger" placeholder="Nhập tên của bạn..." />
+              </div>
+
+              <div class="form-group">
+                <label for="languageSelect">Ngôn ngữ lập trình:</label>
+                <select id="languageSelect" class="form-control">
+                  <option value="javascript">JavaScript (Node.js Sandbox)</option>
+                  <option value="python">Python 3 (Standard I/O)</option>
+                  <option value="cpp">C++ (g++ -O3 Standard I/O)</option>
+                </select>
+              </div>
+
+              <div class="form-group">
+                <label for="roomTypeSelect">Chế độ / Phòng Đấu:</label>
+                <div class="room-selector-row">
+                  <select id="roomTypeSelect" class="form-control">
+                    <option value="PUBLIC">Phòng Chung (Public Arena)</option>
+                    <option value="CUSTOM">Nhập Room ID Riêng...</option>
+                  </select>
+                  <button id="createRoomBtn" class="btn btn-sm btn-secondary" title="Tạo mã phòng riêng mới">+ Tạo Phòng</button>
+                </div>
+              </div>
+
+              <div class="form-group" id="customRoomGroup" style="display: none;">
+                <label for="customRoomInput">Mã Room ID:</label>
+                <div class="custom-room-row">
+                  <input type="text" id="customRoomInput" class="form-control" placeholder="Ví dụ: ROOM_ABC123" />
+                  <button id="joinRoomBtn" class="btn btn-sm btn-primary">Vào</button>
+                </div>
+              </div>
+
+              <!-- Trạng thái Hàng Đợi (Queue Status) -->
+              <div class="queue-status-card" id="queueStatusCard">
+                <div class="queue-status-header">
+                  <span class="queue-pulse"></span>
+                  <span class="queue-title" id="queueStatusTitle">Trạng thái Hàng Đợi (Batch)</span>
+                </div>
+                <div class="queue-status-desc" id="queueStatusDesc">Sẵn sàng nộp code vào giải đấu.</div>
+              </div>
+
+              <button type="button" id="submitBotBtn" class="btn btn-primary btn-block btn-lg pulse-hover">
+                <span class="icon">🚀</span> Nộp / Cập Nhật Code Bot
+              </button>
+            </div>
           </div>
         </div>
 
-        <!-- TAB 2: RECENT MATCHES LIST -->
-        <div class="tab-pane" id="tabPaneMatches">
-          <div class="matches-list" id="matchesList">
-            <div class="empty-state">Đang tải danh sách trận đấu...</div>
+        <!-- Khung Soạn Thảo Code Mở Rộng -->
+        <div class="submit-editor-area">
+          <div class="panel code-panel-full">
+            <div class="panel-header">
+              <div class="panel-title">
+                <span class="icon">💻</span>
+                <h2>Khung Soạn Thảo Thuật Toán</h2>
+              </div>
+              <div class="sample-loader">
+                <span class="sample-label">Nạp mẫu nhanh:</span>
+                <button type="button" id="btn-load-random" class="btn btn-xs btn-outline">Bot Ngẫu Nhiên</button>
+                <button type="button" id="btn-load-hunter" class="btn btn-xs btn-outline">Bot Săn Mồi</button>
+                <button type="button" id="btn-load-striker" class="btn btn-xs btn-outline">Bot Chiếm Cờ</button>
+              </div>
+            </div>
+
+            <div class="editor-wrapper-full">
+              <textarea id="bot-code" class="code-editor" spellcheck="false"></textarea>
+            </div>
+
+            <div class="editor-footer">
+              <p class="code-hint">💡 Hàm nhận vào <code>gameState</code> và xuất nước đi hợp lệ <code>{"from": [r,c], "to": [r,c]}</code>.</p>
+            </div>
           </div>
         </div>
       </div>
-    </aside>
+    </section>
+
+
+    <!-- ======================================================================
+         TAB 3: BẢNG XẾP HẠNG & KHÁN ĐÀI REPLAY (#view-leaderboard)
+         ====================================================================== -->
+    <section class="tab-view" id="view-leaderboard">
+      <div class="arena-layout-container">
+        <!-- CỘT TRÁI: BẢNG XẾP HẠNG TRỰC TIẾP -->
+        <div class="arena-left-col">
+          <div class="panel leaderboard-panel">
+            <div class="panel-header">
+              <div class="panel-title">
+                <span class="icon">🏆</span>
+                <h2>Bảng Xếp Hạng Trực Tiếp</h2>
+              </div>
+              <div class="header-tools">
+                <button id="refreshLbBtn" class="btn btn-sm btn-outline" title="Làm mới Bảng xếp hạng">🔄 Làm mới</button>
+              </div>
+            </div>
+
+            <div class="tabs-nav-sub">
+              <button class="tab-btn active" id="tabBtnLeaderboard">Top Bot Toàn Cầu</button>
+              <button class="tab-btn" id="tabBtnMatches">Trận Đấu Gần Đây</button>
+            </div>
+
+            <div class="panel-body tab-content-body">
+              <!-- Sub-tab 1: Bảng Xếp Hạng -->
+              <div class="tab-pane active" id="tabPaneLeaderboard">
+                <div class="table-container">
+                  <table class="leaderboard-table" id="leaderboardTable">
+                    <thead>
+                      <tr>
+                        <th>#</th>
+                        <th>Bot</th>
+                        <th>Tác giả</th>
+                        <th>Điểm</th>
+                        <th>T/H/B</th>
+                        <th>Lỗi</th>
+                        <th>Hành động</th>
+                      </tr>
+                    </thead>
+                    <tbody id="leaderboardTbody">
+                      <tr>
+                        <td colspan="7" class="empty-cell">Đang tải bảng xếp hạng...</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <div class="scoring-rules">
+                  <small>⭐ Thắng: <strong>+3</strong> | Hòa: <strong>+1</strong> | Thua: <strong>0</strong>. Mini-tournament cụm 10 bot.</small>
+                </div>
+              </div>
+
+              <!-- Sub-tab 2: Danh sách Trận Đấu -->
+              <div class="tab-pane" id="tabPaneMatches">
+                <div class="matches-list" id="matchesList">
+                  <div class="empty-state">Đang tải danh sách trận đấu...</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- CỘT PHẢI: KHÁN ĐÀI VISUALIZER (BÀN CỜ 9X9 & REPLAY) -->
+        <div class="arena-right-col">
+          <div class="panel visualizer-panel">
+            <!-- Match Banner -->
+            <div class="match-banner" id="matchBanner">
+              <div class="team-card team-red" id="cardRed">
+                <div class="team-flag-tag">🔴 RED (Cờ [0,4])</div>
+                <div class="team-name" id="nameRed">Đang chờ...</div>
+                <div class="team-score" id="piecesRed">Quân: 6</div>
+              </div>
+              <div class="match-vs">
+                <div class="vs-badge">VS</div>
+                <div class="match-turn-label" id="turnIndicator">Turn 0 / 0</div>
+              </div>
+              <div class="team-card team-blue" id="cardBlue">
+                <div class="team-flag-tag">🔵 BLUE (Cờ [8,4])</div>
+                <div class="team-name" id="nameBlue">Đang chờ...</div>
+                <div class="team-score" id="piecesBlue">Quân: 6</div>
+              </div>
+            </div>
+
+            <!-- Bàn Cờ 9x9 -->
+            <div class="board-wrapper">
+              <div id="boardGrid" class="board-grid">
+                <!-- 81 ô cờ cố định, cập nhật diff 60fps -->
+              </div>
+            </div>
+
+            <!-- Bộ Điều Khiển Replay -->
+            <div class="replay-controls">
+              <div class="slider-wrapper">
+                <span class="step-label" id="lblPrevTurn">0</span>
+                <input type="range" id="turnSlider" min="0" max="0" value="0" class="turn-slider" />
+                <span class="step-label" id="lblMaxTurn">0</span>
+              </div>
+              <div class="button-row">
+                <button id="btnFirst" class="btn btn-secondary" title="Về đầu">⏮</button>
+                <button id="btnPrev" class="btn btn-secondary" title="Lùi 1 bước">◀</button>
+                <button id="btnPlayPause" class="btn btn-primary play-btn" title="Phát / Dừng">
+                  <span id="playIcon">▶</span> Play Replay
+                </button>
+                <button id="btnNext" class="btn btn-secondary" title="Tiến 1 bước">▶</button>
+                <button id="btnLast" class="btn btn-secondary" title="Đến cuối">⏭</button>
+                <div class="speed-control">
+                  <label for="speedSelect">Speed:</label>
+                  <select id="speedSelect" class="form-control form-control-sm">
+                    <option value="800">0.5x (Chậm)</option>
+                    <option value="400" selected>1.0x (Chuẩn)</option>
+                    <option value="150">2.5x (Nhanh)</option>
+                    <option value="50">Chớp mắt</option>
+                  </select>
+                </div>
+              </div>
+              <div class="move-announcer" id="moveAnnouncer">
+                Bấm vào <strong>"Xem Replay ▶"</strong> ở Bảng xếp hạng bên trái để xem trận đấu trên bàn cờ!
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======================================================================
+         TAB 4: CHƠI BẰNG TAY - LUYỆN TẬP / TEST BOT (#view-manual)
+         ====================================================================== -->
+    <section class="tab-view" id="view-manual">
+      <div class="manual-layout-container">
+        <!-- CỘT TRÁI: BÀN CỜ TƯƠNG TÁC THỰC CHIẾN (INTERACTIVE 9X9 BOARD) -->
+        <div class="manual-left-col">
+          <div class="panel manual-board-panel">
+            <div class="panel-header">
+              <div class="panel-title">
+                <span class="icon">🎮</span>
+                <h2>Bàn Cờ Thực Chiến 9×9 (Người Chơi vs Bot)</h2>
+              </div>
+              <span class="badge badge-primary" id="manualTurnBadge">Lượt: Người chơi (🔴 RED)</span>
+            </div>
+
+            <!-- Bảng hiển thị trạng thái trận đấu -->
+            <div class="match-banner" id="manualMatchBanner">
+              <div class="team-card team-red" id="manualCardRed">
+                <div class="team-flag-tag">🔴 RED (Cờ [0,4])</div>
+                <div class="team-name" id="manualRoleRed">👤 Người Chơi</div>
+                <div class="team-score" id="manualPiecesRed">Quân còn lại: 6</div>
+              </div>
+              <div class="match-vs">
+                <div class="vs-badge">VS</div>
+                <div class="match-turn-label" id="manualTurnIndicator">Turn 0 / 150</div>
+              </div>
+              <div class="team-card team-blue" id="manualCardBlue">
+                <div class="team-flag-tag">🔵 BLUE (Cờ [8,4])</div>
+                <div class="team-name" id="manualRoleBlue">🤖 Bot Đối Thủ</div>
+                <div class="team-score" id="manualPiecesBlue">Quân còn lại: 6</div>
+              </div>
+            </div>
+
+            <!-- Bàn Cờ 9x9 Tương Tác -->
+            <div class="board-wrapper manual-board-wrapper">
+              <div id="manualBoardGrid" class="board-grid interactive-grid">
+                <!-- 81 ô cờ tương tác click chọn & highlight nước đi hợp lệ -->
+              </div>
+            </div>
+
+            <!-- Thanh thông báo & Nút thao tác -->
+            <div class="manual-controls-box">
+              <div class="manual-status-banner" id="manualStatusBanner">
+                👉 Hãy click chọn 1 quân cờ của phe bạn để xem các nước đi hợp lệ (màu xanh)!
+              </div>
+              <div class="manual-action-buttons">
+                <button type="button" id="btnManualReset" class="btn btn-primary">
+                  <span class="icon">🔄</span> Bắt đầu lại (Reset Match)
+                </button>
+                <button type="button" id="btnManualSwapSide" class="btn btn-secondary">
+                  <span class="icon">🔀</span> Đổi phe (Đang cầm: 🔴 RED)
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- CỘT PHẢI: KHU VỰC THỬ NGHIỆM BOT (BOT TEST BENCH) -->
+        <div class="manual-right-col">
+          <div class="panel manual-bench-panel">
+            <div class="panel-header">
+              <div class="panel-title">
+                <span class="icon">🧪</span>
+                <h2>Khu Vực Thử Nghiệm Bot (Bot Test Bench)</h2>
+              </div>
+              <div class="sample-loader">
+                <button type="button" id="btnManualSyncCode" class="btn btn-xs btn-outline" title="Lấy code đang soạn ở Tab Nộp Code">📥 Lấy từ Tab Nộp</button>
+                <button type="button" id="btnManualLoadRandom" class="btn btn-xs btn-outline">Mẫu Random</button>
+                <button type="button" id="btnManualLoadHunter" class="btn btn-xs btn-outline">Mẫu Hunter</button>
+                <button type="button" id="btnManualLoadStriker" class="btn btn-xs btn-outline">Mẫu Striker</button>
+              </div>
+            </div>
+
+            <div class="manual-bench-body">
+              <!-- Chọn chế độ đối thủ & Nút áp dụng -->
+              <div class="manual-config-row">
+                <div class="form-group manual-opponent-group">
+                  <label for="manualOpponentSelect">Chế độ Đối Thủ (Opponent Mode):</label>
+                  <select id="manualOpponentSelect" class="form-control">
+                    <option value="custom">💻 Code bot tự viết ở khung bên dưới</option>
+                    <option value="striker">🛡️ Bot mẫu hệ thống: Striker / Guardian (Chiếm Cờ)</option>
+                    <option value="hunter">🏹 Bot mẫu hệ thống: Hunter (Săn Mồi)</option>
+                    <option value="random">🎲 Bot mẫu hệ thống: Random (Ngẫu Nhiên)</option>
+                  </select>
+                </div>
+                <button type="button" id="btnManualApplyPlay" class="btn btn-primary pulse-hover manual-apply-btn">
+                  <span class="icon">⚡</span> Áp dụng code & Chơi ngay
+                </button>
+              </div>
+
+              <!-- Khung nhập code test nhanh -->
+              <div class="manual-editor-section">
+                <div class="manual-section-header">
+                  <span>📝 Code Bot Đang Thử Nghiệm (JavaScript <code>makeMove(gameState)</code>):</span>
+                  <span class="badge badge-primary" id="manualBotModeBadge">Custom Code</span>
+                </div>
+                <div class="manual-editor-wrapper">
+                  <textarea id="manual-test-code" class="code-editor" spellcheck="false"></textarea>
+                </div>
+              </div>
+
+              <!-- Hộp Log nước đi chi tiết (Move History - Hiển thị 4 nước gần nhất) -->
+              <div class="manual-log-section">
+                <div class="manual-section-header">
+                  <span>📜 Lịch Sử Nước Đi (4 nước gần nhất):</span>
+                  <div class="manual-log-actions">
+                    <button type="button" id="btn-view-all-logs" class="btn btn-xs btn-secondary">📜 Xem Toàn Bộ Lịch Sử</button>
+                    <button type="button" id="btnClearManualLog" class="btn btn-xs btn-outline">Xóa Log</button>
+                  </div>
+                </div>
+                <div class="manual-move-log" id="manualMoveHistory">
+                  <div class="log-empty">Chưa có nước đi nào. Hãy click chọn quân cờ bên trái để bắt đầu!</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
   </main>
+
+  <!-- ======================================================================
+       MODAL POPUP: XEM TOÀN BỘ LỊCH SỬ NƯỚC ĐI (#fullHistoryModal)
+       ====================================================================== -->
+  <dialog id="fullHistoryModal" class="history-modal" closedby="any" aria-labelledby="historyModalTitle">
+    <div class="history-modal-box">
+      <div class="history-modal-header">
+        <div class="history-modal-title-group">
+          <span class="icon">📜</span>
+          <h3 id="historyModalTitle">Toàn Bộ Lịch Sử Nước Đi (Move History)</h3>
+          <span class="badge badge-primary" id="historyModalCountBadge">0 mục</span>
+        </div>
+        <button type="button" id="btnCloseHistoryModal" class="btn btn-sm btn-secondary" title="Đóng Modal (Esc)">
+          ✖ Đóng
+        </button>
+      </div>
+      <div class="history-modal-body" id="fullHistoryModalList">
+        <div class="log-empty">Chưa có dữ liệu lịch sử nước đi.</div>
+      </div>
+      <div class="history-modal-footer">
+        <span class="modal-hint">💡 Mẹo: Bấm phím <code>Esc</code> hoặc click ra ngoài vùng tối để đóng nhanh.</span>
+      </div>
+    </div>
+  </dialog>
 
   <script type="module" src="ui.js"></script>
 </body>

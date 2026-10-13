@@ -11,7 +11,7 @@ export const SAMPLE_BOTS = {
  * Chiến thuật: Đi ngẫu nhiên một nước đi hợp lệ bất kỳ
  */
 function makeMove(gameState) {
-  const moves = gameState.legalMoves;
+  const moves = gameState && gameState.legalMoves;
   if (!moves || moves.length === 0) return null;
   const idx = Math.floor(Math.random() * moves.length);
   return moves[idx];
@@ -21,93 +21,64 @@ return makeMove(gameState);`,
 
   hunter: `/**
  * [Sample] Hunter Bot (Thợ Săn)
- * Chiến thuật: Ưu tiên tìm và ăn quân đối phương theo luật Oẳn Tù Tì
+ * Chiến thuật: Ưu tiên tìm và ăn quân đối phương theo luật Oẳn Tù Tì, kết hợp tiến về cờ địch
  */
 function makeMove(gameState) {
-  const { board, legalMoves } = gameState;
+  const { legalMoves, myColor, enemyFlag } = gameState || {};
+  const board = (gameState && (gameState.board || gameState.grid)) || [];
   if (!legalMoves || legalMoves.length === 0) return null;
 
-  // Lọc các nước đi vào ô có quân đối phương (ăn quân)
-  const captureMoves = legalMoves.filter(m => board[m.to[0]][m.to[1]] !== null);
+  const targetFlag = enemyFlag || (myColor === 'RED' ? [8, 4] : [0, 4]);
+
+  // 1. Nếu có thể chạm thẳng cờ đối phương -> Đi ngay để thắng
+  const winMove = legalMoves.find(m => m.to[0] === targetFlag[0] && m.to[1] === targetFlag[1]);
+  if (winMove) return winMove;
+
+  // 2. Lọc các nước đi vào ô có quân đối phương (ăn quân)
+  const captureMoves = legalMoves.filter(
+    m => board[m.to[0]] && board[m.to[0]][m.to[1]] !== null
+  );
 
   if (captureMoves.length > 0) {
-    // Chọn ngẫu nhiên một trong các nước ăn quân
     const idx = Math.floor(Math.random() * captureMoves.length);
     return captureMoves[idx];
   }
 
-  // Nếu không có quân để ăn, đi ngẫu nhiên
+  // 3. Nếu không có quân để ăn, đi ngẫu nhiên
   const randIdx = Math.floor(Math.random() * legalMoves.length);
   return legalMoves[randIdx];
 }
 
 return makeMove(gameState);`,
 
-  striker: `/**
- * [Sample] Striker Bot (Bot Chiếm Cờ / Vừa Công Vừa Thủ)
- * Chiến thuật: 
- * 1. Chiếm cờ đối phương ngay lập tức nếu có nước đi tới enemyFlag
- * 2. Bảo vệ cờ phe mình nếu có địch áp sát
- * 3. Tiến quân dần về phía cờ đối phương
- */
-function makeMove(gameState) {
-  const { board, myColor, myFlag, enemyFlag, legalMoves } = gameState;
+  striker: `function makeMove(gameState) {
+  const { legalMoves, myColor, enemyFlag } = gameState;
+  
+  // 1. Kiểm tra an toàn: nếu không có nước đi hợp lệ
   if (!legalMoves || legalMoves.length === 0) return null;
 
-  function dist(p1, p2) {
-    return Math.max(Math.abs(p1[0] - p2[0]), Math.abs(p1[1] - p2[1]));
-  }
+  // 2. Xác định cờ đối phương an toàn (có fallback nếu enemyFlag bị thiếu)
+  const targetFlag = enemyFlag || (myColor === 'RED' ? [8, 4] : [0, 4]);
 
-  // 1. CHIẾM CỜ THẮNG LUÔN
-  for (let i = 0; i < legalMoves.length; i++) {
-    const m = legalMoves[i];
-    if (m.to[0] === enemyFlag[0] && m.to[1] === enemyFlag[1]) {
-      return m;
-    }
-  }
+  // Hàm tính khoảng cách Manhattan an toàn
+  const getDist = (posA, posB) => {
+    if (!posA || !posB) return 999;
+    return Math.abs(posA[0] - posB[0]) + Math.abs(posA[1] - posB[1]);
+  };
 
-  // 2. PHÒNG THỦ CỜ: Quét địch gần cờ trong bán kính <= 2 ô
-  let primaryThreat = null;
-  let minThreatDist = 999;
-  for (let r = 0; r < board.length; r++) {
-    for (let c = 0; c < board[r].length; c++) {
-      const cell = board[r][c];
-      if (cell && cell.owner !== myColor) {
-        const d = dist([r, c], myFlag);
-        if (d <= 2 && d < minThreatDist) {
-          minThreatDist = d;
-          primaryThreat = [r, c];
-        }
-      }
-    }
-  }
+  // 3. Ưu tiên 1: Nếu có nước đi chạm thẳng vào cờ đối phương -> Đi ngay để thắng
+  const winMove = legalMoves.find(m => m.to[0] === targetFlag[0] && m.to[1] === targetFlag[1]);
+  if (winMove) return winMove;
 
-  // Nếu cờ bị đe dọa, ưu tiên diệt kẻ xâm nhập
-  if (primaryThreat) {
-    for (let i = 0; i < legalMoves.length; i++) {
-      const m = legalMoves[i];
-      if (m.to[0] === primaryThreat[0] && m.to[1] === primaryThreat[1]) {
-        return m;
-      }
-    }
-  }
-
-  // 3. ƯU TIÊN ĂN QUÂN ĐỐI PHƯƠNG
-  const captureMoves = legalMoves.filter(m => board[m.to[0]][m.to[1]] !== null);
-  if (captureMoves.length > 0) {
-    captureMoves.sort((a, b) => dist(a.to, enemyFlag) - dist(b.to, enemyFlag));
-    return captureMoves[0];
-  }
-
-  // 4. TIẾN CÔNG VỀ PHÍA CỜ ĐỐI THỦ
+  // 4. Ưu tiên 2: Tìm nước đi giúp áp sát cờ đối phương nhất
   let bestMove = legalMoves[0];
-  let minEnemyFlagDist = 999;
-  for (let i = 0; i < legalMoves.length; i++) {
-    const m = legalMoves[i];
-    const d = dist(m.to, enemyFlag);
-    if (d < minEnemyFlagDist) {
-      minEnemyFlagDist = d;
-      bestMove = m;
+  let minDistance = 999;
+
+  for (const move of legalMoves) {
+    const d = getDist(move.to, targetFlag);
+    if (d < minDistance) {
+      minDistance = d;
+      bestMove = move;
     }
   }
 
