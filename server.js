@@ -25,6 +25,7 @@ import express from 'express';
 import cors from 'cors';
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 
 import { 
@@ -54,6 +55,8 @@ app.use(express.static(__dirname));
 const DATA_DIR = path.join(__dirname, 'data');
 const PLAYERS_FILE = path.join(DATA_DIR, 'players.json');
 const MATCHES_FILE = path.join(DATA_DIR, 'matches.json');
+const USERS_FILE = path.join(DATA_DIR, 'users.json');
+const TOURNAMENT_FILE = path.join(DATA_DIR, 'tournament.json');
 
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -71,6 +74,194 @@ const DEFAULT_SYSTEM_BOTS = [
 // In-memory Database
 const dbPlayers = new Map(); // botId -> Normalized Player/Bot Record
 const dbMatches = new Map(); // matchId -> Match Log
+const dbUsers = new Map(); // userId -> { id, username, passwordHash, salt, role: 'user' | 'admin', createdAt }
+const activeSessions = new Map(); // token -> { userId, username, role, expiresAt }
+
+// ============================================================================
+// HỆ THỐNG XÁC THỰC MÃ HÓA & QUẢN LÝ NGƯỜI DÙNG (AUTH & ROLES)
+// ============================================================================
+
+function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
+  const hash = crypto.scryptSync(password, salt, 64).toString('hex');
+  return { hash, salt };
+}
+
+function verifyPassword(password, hash, salt) {
+  try {
+    const calc = crypto.scryptSync(password, salt, 64).toString('hex');
+    return crypto.timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(calc, 'hex'));
+  } catch (err) {
+    return false;
+  }
+}
+
+function loadUsers() {
+  try {
+    if (fs.existsSync(USERS_FILE)) {
+      const raw = fs.readFileSync(USERS_FILE, 'utf-8');
+      const list = JSON.parse(raw);
+      if (Array.isArray(list)) {
+        for (const u of list) {
+          if (u && u.id) {
+            dbUsers.set(u.id, u);
+          }
+        }
+        console.log(`[Auth] Đã tải ${dbUsers.size} người dùng từ ${USERS_FILE}`);
+      }
+    }
+  } catch (err) {
+    console.error('[Auth] Lỗi khi đọc users.json:', err.message);
+  }
+
+  // Khởi tạo tài khoản Admin mặc định nếu chưa có
+  let hasAdmin = false;
+  for (const u of dbUsers.values()) {
+    if (u.username && u.username.toLowerCase() === 'admin') {
+      hasAdmin = true;
+      break;
+    }
+  }
+
+  if (!hasAdmin) {
+    const { hash, salt } = hashPassword('admin123');
+    const adminUser = {
+      id: 'user_admin_default',
+      username: 'admin',
+      passwordHash: hash,
+      salt: salt,
+      role: 'admin',
+      createdAt: Date.now()
+    };
+    dbUsers.set(adminUser.id, adminUser);
+    saveUsers();
+    console.log('[Auth] 👑 Đã khởi tạo tài khoản Admin mặc định: admin / admin123');
+  }
+}
+
+function saveUsers() {
+  try {
+    const list = Array.from(dbUsers.values());
+    fs.writeFileSync(USERS_FILE, JSON.stringify(list, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('[Auth] Lỗi khi lưu users.json:', err.message);
+  }
+}
+
+// ============================================================================
+// HỆ THỐNG CẤU HÌNH & TRẠNG THÁI GIẢI ĐẤU (TOURNAMENT MANAGEMENT)
+// ============================================================================
+
+let tournamentState = {
+  isOpenForRegistration: true,
+  registrationStart: new Date(Date.now() - 3600 * 1000 * 24).toISOString(),
+  registrationEnd: new Date(Date.now() + 3600 * 1000 * 24 * 7).toISOString(),
+  tournamentStart: new Date(Date.now() + 3600 * 1000 * 24 * 8).toISOString(),
+  status: 'REGISTRATION', // 'UPCOMING' | 'REGISTRATION' | 'RUNNING' | 'COMPLETED'
+  prizes: [
+    { id: 'prize_1', rank: 1, title: 'Hạng 1 (Quán Quân)', reward: 'Cúp Vàng + 500.000 VNĐ', badge: '🥇' },
+    { id: 'prize_2', rank: 2, title: 'Hạng 2 (Á Quân)', reward: 'Cúp Bạc + 300.000 VNĐ', badge: '🥈' },
+    { id: 'prize_3', rank: 3, title: 'Hạng 3 (Quý Quân)', reward: 'Huy Chương Đồng + 100.000 VNĐ', badge: '🥉' },
+    { id: 'prize_4', rank: 4, title: 'Giải Sáng Tạo', reward: 'Kỷ Niệm Chương + 50.000 VNĐ', badge: '✨' }
+  ],
+  isPrizeAnnounced: true,
+  tournamentProgress: {
+    isRunning: false,
+    totalMatches: 0,
+    completedMatches: 0,
+    currentBatch: 0,
+    totalBatches: 0,
+    percentage: 0,
+    statusText: 'Sẵn sàng'
+  }
+};
+
+function loadTournamentConfig() {
+  try {
+    if (fs.existsSync(TOURNAMENT_FILE)) {
+      const raw = fs.readFileSync(TOURNAMENT_FILE, 'utf-8');
+      const loaded = JSON.parse(raw);
+      if (loaded && typeof loaded === 'object') {
+        tournamentState = {
+          ...tournamentState,
+          ...loaded,
+          tournamentProgress: {
+            ...tournamentState.tournamentProgress,
+            isRunning: false,
+            statusText: 'Sẵn sàng'
+          }
+        };
+        console.log(`[Tournament] Đã tải cấu hình giải đấu từ ${TOURNAMENT_FILE}`);
+        return;
+      }
+    }
+  } catch (err) {
+    console.error('[Tournament] Lỗi khi đọc tournament.json:', err.message);
+  }
+  saveTournamentConfig();
+}
+
+function saveTournamentConfig() {
+  try {
+    const toSave = {
+      isOpenForRegistration: tournamentState.isOpenForRegistration,
+      registrationStart: tournamentState.registrationStart,
+      registrationEnd: tournamentState.registrationEnd,
+      tournamentStart: tournamentState.tournamentStart,
+      status: tournamentState.status,
+      prizes: tournamentState.prizes,
+      isPrizeAnnounced: tournamentState.isPrizeAnnounced
+    };
+    fs.writeFileSync(TOURNAMENT_FILE, JSON.stringify(toSave, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('[Tournament] Lỗi khi lưu tournament.json:', err.message);
+  }
+}
+
+function isRegistrationOpenNow() {
+  if (!tournamentState.isOpenForRegistration) return false;
+  const now = Date.now();
+  const start = new Date(tournamentState.registrationStart).getTime();
+  const end = new Date(tournamentState.registrationEnd).getTime();
+
+  if (!isNaN(start) && now < start) return false;
+  if (!isNaN(end) && now > end) return false;
+  return true;
+}
+
+// Middleware xác thực Token & phân quyền
+function extractUserFromReq(req) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) return null;
+  const token = authHeader.substring(7).trim();
+  const session = activeSessions.get(token);
+  if (!session) return null;
+  if (session.expiresAt && Date.now() > session.expiresAt) {
+    activeSessions.delete(token);
+    return null;
+  }
+  return session;
+}
+
+function authenticateToken(req, res, next) {
+  const user = extractUserFromReq(req);
+  if (!user) {
+    return res.status(401).json({ error: 'Chưa đăng nhập hoặc phiên làm việc đã hết hạn. Vui lòng đăng nhập lại.' });
+  }
+  req.user = user;
+  next();
+}
+
+function requireAdmin(req, res, next) {
+  const user = extractUserFromReq(req);
+  if (!user) {
+    return res.status(401).json({ error: 'Vui lòng đăng nhập tài khoản Quản trị viên (Admin).' });
+  }
+  if (user.role !== 'admin') {
+    return res.status(403).json({ error: 'Từ chối truy cập: Bạn không có quyền Quản trị viên (Admin).' });
+  }
+  req.user = user;
+  next();
+}
 
 /**
  * Chuẩn hóa thông tin Bot/Player để đảm bảo luôn có đầy đủ cả
@@ -165,6 +356,10 @@ function syncAndEnsureLastMatchIds() {
  * Tải dữ liệu từ ổ đĩa khi khởi động server
  */
 function loadPersistedData() {
+  // Tải danh sách người dùng và cấu hình giải đấu
+  loadUsers();
+  loadTournamentConfig();
+
   try {
     if (fs.existsSync(PLAYERS_FILE)) {
       const raw = fs.readFileSync(PLAYERS_FILE, 'utf-8');
@@ -531,7 +726,495 @@ async function processQueue() {
 }
 
 // ============================================================================
-// 3. API ENDPOINTS (HTTP REST)
+// 3. AUTHENTICATION & TOURNAMENT MANAGEMENT ENDPOINTS
+// ============================================================================
+
+/**
+ * POST /api/auth/register
+ * Đăng ký tài khoản người chơi mới (mặc định role 'user')
+ */
+app.post('/api/auth/register', (req, res) => {
+  try {
+    const { username, password } = req.body;
+    if (!username || typeof username !== 'string' || username.trim().length < 3) {
+      return res.status(400).json({ error: 'Tên đăng nhập phải có ít nhất 3 ký tự.' });
+    }
+    if (!password || typeof password !== 'string' || password.length < 6) {
+      return res.status(400).json({ error: 'Mật khẩu phải có ít nhất 6 ký tự.' });
+    }
+
+    const cleanUsername = username.trim();
+    // Kiểm tra trùng username (không phân biệt hoa thường)
+    for (const u of dbUsers.values()) {
+      if (u.username.toLowerCase() === cleanUsername.toLowerCase()) {
+        return res.status(409).json({ error: 'Tên đăng nhập này đã tồn tại, vui lòng chọn tên khác.' });
+      }
+    }
+
+    const { hash, salt } = hashPassword(password);
+    const userId = `user_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    const newUser = {
+      id: userId,
+      username: cleanUsername,
+      passwordHash: hash,
+      salt: salt,
+      role: 'user',
+      createdAt: Date.now()
+    };
+
+    dbUsers.set(userId, newUser);
+    saveUsers();
+
+    // Tạo token phiên đăng nhập (hạn 7 ngày)
+    const token = crypto.randomBytes(32).toString('hex');
+    activeSessions.set(token, {
+      userId,
+      username: cleanUsername,
+      role: 'user',
+      expiresAt: Date.now() + 7 * 24 * 3600 * 1000
+    });
+
+    console.log(`[Auth] 👤 Người dùng mới đăng ký: ${cleanUsername} (${userId})`);
+    return res.status(201).json({
+      success: true,
+      message: 'Đăng ký thành công!',
+      token,
+      user: { id: userId, username: cleanUsername, role: 'user' }
+    });
+  } catch (err) {
+    console.error('Error in /api/auth/register:', err);
+    return res.status(500).json({ error: 'Lỗi server khi đăng ký tài khoản.' });
+  }
+});
+
+/**
+ * POST /api/auth/login
+ * Đăng nhập tài khoản người dùng hoặc Admin
+ */
+app.post('/api/auth/login', (req, res) => {
+  try {
+    const { username, password } = req.body;
+    if (!username || !password) {
+      return res.status(400).json({ error: 'Vui lòng cung cấp đầy đủ tên đăng nhập và mật khẩu.' });
+    }
+
+    const cleanUsername = username.trim().toLowerCase();
+    let targetUser = null;
+    for (const u of dbUsers.values()) {
+      if (u.username.toLowerCase() === cleanUsername) {
+        targetUser = u;
+        break;
+      }
+    }
+
+    if (!targetUser) {
+      return res.status(401).json({ error: 'Tên đăng nhập hoặc mật khẩu không chính xác.' });
+    }
+
+    const isMatch = verifyPassword(password, targetUser.passwordHash, targetUser.salt);
+    if (!isMatch) {
+      return res.status(401).json({ error: 'Tên đăng nhập hoặc mật khẩu không chính xác.' });
+    }
+
+    // Tạo token phiên đăng nhập mới
+    const token = crypto.randomBytes(32).toString('hex');
+    activeSessions.set(token, {
+      userId: targetUser.id,
+      username: targetUser.username,
+      role: targetUser.role,
+      expiresAt: Date.now() + 7 * 24 * 3600 * 1000
+    });
+
+    console.log(`[Auth] 🔑 Đăng nhập thành công: ${targetUser.username} (${targetUser.role})`);
+    return res.status(200).json({
+      success: true,
+      message: 'Đăng nhập thành công!',
+      token,
+      user: {
+        id: targetUser.id,
+        username: targetUser.username,
+        role: targetUser.role
+      }
+    });
+  } catch (err) {
+    console.error('Error in /api/auth/login:', err);
+    return res.status(500).json({ error: 'Lỗi server khi đăng nhập.' });
+  }
+});
+
+/**
+ * GET /api/auth/me
+ * Lấy thông tin tài khoản hiện tại từ Token
+ */
+app.get('/api/auth/me', authenticateToken, (req, res) => {
+  return res.status(200).json({
+    success: true,
+    user: {
+      id: req.user.userId,
+      username: req.user.username,
+      role: req.user.role
+    }
+  });
+});
+
+/**
+ * POST /api/auth/logout
+ * Đăng xuất hủy token
+ */
+app.post('/api/auth/logout', (req, res) => {
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    const token = authHeader.substring(7).trim();
+    activeSessions.delete(token);
+  }
+  return res.status(200).json({ success: true, message: 'Đã đăng xuất.' });
+});
+
+/**
+ * GET /api/tournament/status
+ * Trả về thông tin giải đấu công khai: thời gian, trạng thái đăng ký, danh sách giải thưởng
+ */
+app.get('/api/tournament/status', (req, res) => {
+  try {
+    return res.status(200).json({
+      success: true,
+      data: {
+        isOpenForRegistration: tournamentState.isOpenForRegistration,
+        isRegistrationOpenNow: isRegistrationOpenNow(),
+        registrationStart: tournamentState.registrationStart,
+        registrationEnd: tournamentState.registrationEnd,
+        tournamentStart: tournamentState.tournamentStart,
+        status: tournamentState.status,
+        prizes: tournamentState.prizes,
+        isPrizeAnnounced: tournamentState.isPrizeAnnounced,
+        tournamentProgress: tournamentState.tournamentProgress,
+        totalEligibleBots: dbPlayers.size
+      }
+    });
+  } catch (err) {
+    console.error('Error in /api/tournament/status:', err);
+    return res.status(500).json({ error: 'Lỗi server khi lấy trạng thái giải đấu.' });
+  }
+});
+
+// ============================================================================
+// ADMIN TOURNAMENT MANAGEMENT ENDPOINTS
+// ============================================================================
+
+/**
+ * POST /api/admin/tournament/schedule
+ * Admin thiết lập lịch trình giải đấu
+ */
+app.post('/api/admin/tournament/schedule', requireAdmin, (req, res) => {
+  try {
+    const { registrationStart, registrationEnd, tournamentStart, isOpenForRegistration, status } = req.body;
+    if (registrationStart) tournamentState.registrationStart = registrationStart;
+    if (registrationEnd) tournamentState.registrationEnd = registrationEnd;
+    if (tournamentStart) tournamentState.tournamentStart = tournamentStart;
+    if (typeof isOpenForRegistration === 'boolean') {
+      tournamentState.isOpenForRegistration = isOpenForRegistration;
+    }
+    if (status) tournamentState.status = status;
+
+    saveTournamentConfig();
+    broadcastSSE('tournament_updated', { tournament: tournamentState });
+
+    return res.status(200).json({
+      success: true,
+      message: 'Đã lưu cấu hình lịch trình giải đấu!',
+      data: tournamentState
+    });
+  } catch (err) {
+    console.error('Error in /api/admin/tournament/schedule:', err);
+    return res.status(500).json({ error: 'Lỗi server khi lưu lịch trình.' });
+  }
+});
+
+/**
+ * POST /api/admin/tournament/toggle-registration
+ * Admin toggle thủ công mở / khóa cổng nộp bot
+ */
+app.post('/api/admin/tournament/toggle-registration', requireAdmin, (req, res) => {
+  try {
+    tournamentState.isOpenForRegistration = !tournamentState.isOpenForRegistration;
+    saveTournamentConfig();
+    broadcastSSE('tournament_updated', { tournament: tournamentState });
+
+    const statusMsg = tournamentState.isOpenForRegistration ? 'ĐÃ MỞ' : 'ĐÃ KHÓA';
+    console.log(`[Admin] 📢 Admin đã thay đổi cổng nộp bot: ${statusMsg}`);
+    return res.status(200).json({
+      success: true,
+      isOpenForRegistration: tournamentState.isOpenForRegistration,
+      message: `Cổng nộp bot hiện ${statusMsg}.`
+    });
+  } catch (err) {
+    console.error('Error in /api/admin/tournament/toggle-registration:', err);
+    return res.status(500).json({ error: 'Lỗi server khi chuyển trạng thái đăng ký.' });
+  }
+});
+
+/**
+ * POST /api/admin/tournament/prizes
+ * Admin lưu danh sách cơ cấu giải thưởng
+ */
+app.post('/api/admin/tournament/prizes', requireAdmin, (req, res) => {
+  try {
+    const { prizes } = req.body;
+    if (!Array.isArray(prizes)) {
+      return res.status(400).json({ error: 'Danh sách giải thưởng không hợp lệ (cần dạng mảng).' });
+    }
+
+    tournamentState.prizes = prizes.map((p, idx) => ({
+      id: p.id || `prize_${Date.now()}_${idx}`,
+      rank: Number(p.rank) || (idx + 1),
+      title: (p.title || `Hạng ${idx + 1}`).trim(),
+      reward: (p.reward || '').trim(),
+      badge: p.badge || (idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : '✨')
+    }));
+
+    saveTournamentConfig();
+    broadcastSSE('tournament_updated', { tournament: tournamentState });
+
+    return res.status(200).json({
+      success: true,
+      message: 'Đã lưu cấu hình giải thưởng thành công!',
+      prizes: tournamentState.prizes
+    });
+  } catch (err) {
+    console.error('Error in /api/admin/tournament/prizes:', err);
+    return res.status(500).json({ error: 'Lỗi server khi lưu giải thưởng.' });
+  }
+});
+
+/**
+ * POST /api/admin/tournament/announce-prizes
+ * Admin bật/tắt công bố giải thưởng lên Bảng xếp hạng và Trang chủ
+ */
+app.post('/api/admin/tournament/announce-prizes', requireAdmin, (req, res) => {
+  try {
+    const { isPrizeAnnounced } = req.body;
+    tournamentState.isPrizeAnnounced = typeof isPrizeAnnounced === 'boolean' 
+      ? isPrizeAnnounced 
+      : !tournamentState.isPrizeAnnounced;
+
+    saveTournamentConfig();
+    broadcastSSE('tournament_updated', { tournament: tournamentState });
+
+    const msg = tournamentState.isPrizeAnnounced ? 'Đã công bố trao giải thưởng!' : 'Đã ẩn công bố giải thưởng.';
+    return res.status(200).json({
+      success: true,
+      isPrizeAnnounced: tournamentState.isPrizeAnnounced,
+      message: msg
+    });
+  } catch (err) {
+    console.error('Error in /api/admin/tournament/announce-prizes:', err);
+    return res.status(500).json({ error: 'Lỗi server khi công bố giải thưởng.' });
+  }
+});
+
+/**
+ * GET /api/admin/tournament/progress
+ * Admin lấy tiến độ thi đấu giải đấu
+ */
+app.get('/api/admin/tournament/progress', requireAdmin, (req, res) => {
+  return res.status(200).json({
+    success: true,
+    progress: tournamentState.tournamentProgress
+  });
+});
+
+/**
+ * POST /api/admin/tournament/run-all
+ * Admin kích hoạt chạy toàn bộ giải đấu Round-Robin Matchmaking theo từng Batch 10 trận
+ */
+let isTournamentRunning = false;
+
+app.post('/api/admin/tournament/run-all', requireAdmin, async (req, res) => {
+  try {
+    if (isTournamentRunning || tournamentState.tournamentProgress.isRunning) {
+      return res.status(400).json({ error: 'Giải đấu đang trong quá trình chạy, vui lòng chờ hoàn tất!' });
+    }
+
+    const eligibleBots = Array.from(dbPlayers.values());
+    if (eligibleBots.length < 2) {
+      return res.status(400).json({ error: 'Cần ít nhất 2 bot trong hệ thống để tổ chức giải đấu.' });
+    }
+
+    // Reset chỉ số trận đấu để bắt đầu giải đấu chính thức công bằng
+    const resetScores = req.body.resetScores !== false;
+    if (resetScores) {
+      for (const b of dbPlayers.values()) {
+        b.score = 0;
+        b.wins = 0;
+        b.draws = 0;
+        b.losses = 0;
+        b.errors = 0;
+        b.matchesPlayed = 0;
+      }
+      savePersistedData();
+    }
+
+    // Tạo danh sách các cặp đấu vòng tròn Round-Robin (2 lượt Red/Blue đối xứng để hoàn toàn công bằng)
+    const matchPairs = [];
+    for (let i = 0; i < eligibleBots.length; i++) {
+      for (let j = i + 1; j < eligibleBots.length; j++) {
+        const botA = eligibleBots[i];
+        const botB = eligibleBots[j];
+        // Lượt 1: A là Red, B là Blue
+        matchPairs.push({ red: botA, blue: botB });
+        // Lượt 2: B là Red, A là Blue
+        matchPairs.push({ red: botB, blue: botA });
+      }
+    }
+
+    const totalMatches = matchPairs.length;
+    const totalBatches = Math.ceil(totalMatches / BATCH_SIZE);
+
+    tournamentState.status = 'RUNNING';
+    tournamentState.tournamentProgress = {
+      isRunning: true,
+      totalMatches,
+      completedMatches: 0,
+      currentBatch: 0,
+      totalBatches,
+      percentage: 0,
+      statusText: `Khởi động giải đấu với ${eligibleBots.length} bot (${totalMatches} trận chia làm ${totalBatches} batches)...`
+    };
+
+    saveTournamentConfig();
+    broadcastSSE('tournament_started', tournamentState.tournamentProgress);
+
+    // Bắt đầu chạy ngầm theo Batch 10 trận
+    isTournamentRunning = true;
+
+    // Phản hồi ngay cho Admin biết tiến trình đã khởi chạy thành công
+    res.status(200).json({
+      success: true,
+      message: `Đã kích hoạt giải đấu: ${eligibleBots.length} bot, ${totalMatches} trận đấu (${totalBatches} batches).`,
+      progress: tournamentState.tournamentProgress
+    });
+
+    // Worker chạy Batch giải đấu
+    (async () => {
+      let completedCount = 0;
+      let batchIndex = 0;
+
+      while (matchPairs.length > 0) {
+        batchIndex++;
+        const currentBatch = matchPairs.splice(0, BATCH_SIZE);
+
+        tournamentState.tournamentProgress.currentBatch = batchIndex;
+        tournamentState.tournamentProgress.statusText = `Đang chạy Batch ${batchIndex}/${totalBatches} (${currentBatch.length} trận)...`;
+        broadcastSSE('tournament_progress', tournamentState.tournamentProgress);
+
+        for (const pair of currentBatch) {
+          const botRedConfig = {
+            id: pair.red.botId,
+            name: pair.red.botName,
+            author: pair.red.author,
+            language: pair.red.language,
+            code: { code: pair.red.botCode, language: pair.red.language }
+          };
+          const botBlueConfig = {
+            id: pair.blue.botId,
+            name: pair.blue.botName,
+            author: pair.blue.author,
+            language: pair.blue.language,
+            code: { code: pair.blue.botCode, language: pair.blue.language }
+          };
+
+          const matchResult = await new Promise(resolve => {
+            setImmediate(() => {
+              const res = playMatch(botRedConfig, botBlueConfig, { timeoutMs: 200 });
+              resolve(res);
+            });
+          });
+
+          completedCount++;
+
+          dbMatches.set(matchResult.id, {
+            ...matchResult,
+            roomId: 'PUBLIC',
+            timestamp: Date.now()
+          });
+
+          const redRecord = dbPlayers.get(pair.red.botId);
+          const blueRecord = dbPlayers.get(pair.blue.botId);
+
+          if (redRecord) redRecord.lastMatchId = matchResult.id;
+          if (blueRecord) blueRecord.lastMatchId = matchResult.id;
+
+          if (redRecord && blueRecord) {
+            redRecord.matchesPlayed += 1;
+            blueRecord.matchesPlayed += 1;
+            redRecord.errors += matchResult.botRed.errors || 0;
+            blueRecord.errors += matchResult.botBlue.errors || 0;
+
+            if (matchResult.winner === 'RED') {
+              redRecord.wins += 1;
+              redRecord.score += SCORING.WIN;
+              blueRecord.losses += 1;
+              blueRecord.score += SCORING.LOSS;
+            } else if (matchResult.winner === 'BLUE') {
+              blueRecord.wins += 1;
+              blueRecord.score += SCORING.WIN;
+              redRecord.losses += 1;
+              redRecord.score += SCORING.LOSS;
+            } else {
+              redRecord.draws += 1;
+              redRecord.score += SCORING.DRAW;
+              blueRecord.draws += 1;
+              blueRecord.score += SCORING.DRAW;
+            }
+          }
+        }
+
+        tournamentState.tournamentProgress.completedMatches = completedCount;
+        tournamentState.tournamentProgress.percentage = Math.round((completedCount / totalMatches) * 100);
+
+        savePersistedData();
+        broadcastSSE('leaderboard_updated', {
+          roomId: 'PUBLIC',
+          leaderboard: getSortedLeaderboard('PUBLIC')
+        });
+        broadcastSSE('tournament_progress', tournamentState.tournamentProgress);
+
+        // Nghỉ ngắn giữa các batch để không block event loop
+        await new Promise(r => setTimeout(r, WORKER_REST_MS));
+      }
+
+      tournamentState.status = 'COMPLETED';
+      tournamentState.tournamentProgress.isRunning = false;
+      tournamentState.tournamentProgress.completedMatches = totalMatches;
+      tournamentState.tournamentProgress.percentage = 100;
+      tournamentState.tournamentProgress.statusText = `🎉 Toàn bộ giải đấu đã hoàn thành xuất sắc (${totalMatches} trận)!`;
+
+      saveTournamentConfig();
+      savePersistedData();
+      isTournamentRunning = false;
+
+      broadcastSSE('tournament_completed', tournamentState.tournamentProgress);
+      broadcastSSE('leaderboard_updated', {
+        roomId: 'PUBLIC',
+        leaderboard: getSortedLeaderboard('PUBLIC')
+      });
+      console.log(`🏆 [Tournament] Đã hoàn tất toàn bộ giải đấu (${totalMatches} trận)!`);
+    })().catch(err => {
+      console.error('[Tournament] Lỗi khi chạy giải đấu:', err);
+      isTournamentRunning = false;
+      tournamentState.tournamentProgress.isRunning = false;
+      tournamentState.tournamentProgress.statusText = `Lỗi: ${err.message}`;
+      saveTournamentConfig();
+    });
+
+  } catch (err) {
+    console.error('Error in /api/admin/tournament/run-all:', err);
+    return res.status(500).json({ error: 'Lỗi server khi khởi chạy giải đấu.' });
+  }
+});
+
+// ============================================================================
+// 4. API BOT & MATCH ENDPOINTS (HTTP REST)
 // ============================================================================
 
 /**
@@ -546,9 +1229,23 @@ app.post('/api/bot/submit', (req, res) => {
       return res.status(400).json({ error: 'botCode is required and cannot be empty.' });
     }
 
-    const assignedId = (botId || playerId || `player_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`).trim();
+    // Kiểm tra thời hạn đăng ký giải đấu
+    const authUser = extractUserFromReq(req);
+    const isAdmin = authUser && authUser.role === 'admin';
+    if (!isRegistrationOpenNow() && !isAdmin) {
+      return res.status(403).json({
+        error: 'Cổng nộp bot hiện đang đóng hoặc đã hết hạn đăng ký giải đấu!',
+        details: {
+          isOpenForRegistration: tournamentState.isOpenForRegistration,
+          registrationStart: tournamentState.registrationStart,
+          registrationEnd: tournamentState.registrationEnd
+        }
+      });
+    }
+
+    const assignedId = (botId || playerId || (authUser ? `player_${authUser.userId}` : `player_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`)).trim();
     const assignedBotName = (botName || name || playerName || 'AlphaBot').trim();
-    const assignedAuthor = (author || playerName || 'Anonymous').trim();
+    const assignedAuthor = (author || playerName || (authUser ? authUser.username : 'Anonymous')).trim();
     const assignedLanguage = (language || 'javascript').toLowerCase();
     const targetRoomId = (roomId || 'PUBLIC').trim().toUpperCase();
 

@@ -20,7 +20,7 @@
       </div>
     </div>
 
-    <!-- 4 Nút chuyển Tab chính -->
+    <!-- 5 Nút chuyển Tab chính (Tab Admin chỉ hiển thị khi có quyền Admin) -->
     <nav class="nav-tabs-bar">
       <button class="nav-tab-btn active" id="tab-guide" data-target="view-guide">
         <span class="tab-icon">🏠</span> Trang Chủ & Hướng Dẫn
@@ -34,9 +34,25 @@
       <button class="nav-tab-btn" id="tab-leaderboard" data-target="view-leaderboard">
         <span class="tab-icon">🏆</span> Bảng Xếp Hạng & Khán Đài
       </button>
+      <button class="nav-tab-btn admin-tab-btn" id="tab-admin" data-target="view-admin" style="display: none;">
+        <span class="tab-icon">⚙️</span> Quản Trị Giải Đấu
+      </button>
     </nav>
 
     <div class="header-actions">
+      <!-- Khung Trạng Thái Đăng Nhập / Phân Quyền -->
+      <div class="user-auth-box" id="userAuthBox">
+        <button type="button" id="btnOpenAuthModal" class="btn btn-outline btn-sm">
+          <span class="icon">👤</span> Đăng Nhập / Đăng Ký
+        </button>
+        <div id="loggedInUserBar" class="logged-in-user-bar" style="display: none;">
+          <span class="user-avatar" id="navUserAvatar">👤</span>
+          <span class="username" id="navUsername">User</span>
+          <span class="badge badge-primary" id="navUserRole">User</span>
+          <button type="button" id="btnLogout" class="btn btn-xs btn-outline" title="Đăng Xuất">🚪 Thoát</button>
+        </div>
+      </div>
+
       <div class="status-indicator" id="arenaStatus">
         <span class="status-dot"></span>
         <span class="status-label" id="statusLabel">Sẵn sàng</span>
@@ -73,6 +89,56 @@
             <button class="btn btn-secondary btn-lg" id="btn-cta-leaderboard">
               <span class="icon">🏆</span> Xem Bảng Xếp Hạng
             </button>
+          </div>
+        </div>
+
+        <!-- Khối Đếm Ngược Thời Gian Giải Đấu (Tournament Countdown) -->
+        <div class="tournament-countdown-card" id="tournamentCountdownCard">
+          <div class="countdown-header">
+            <div class="countdown-title-group">
+              <span class="countdown-icon">🏆</span>
+              <div>
+                <h3 id="tournamentCountdownTitle">Giải Đấu Oằn Tù Tì 9×9 Championship</h3>
+                <p id="countdownContextText">Đang đếm ngược đến hạn chót nộp bài giải đấu...</p>
+              </div>
+            </div>
+            <span class="badge badge-primary" id="tournamentStatusBadge">Đang Mở Nộp Bài</span>
+          </div>
+
+          <div class="countdown-timer-grid">
+            <div class="countdown-box">
+              <span class="countdown-val" id="cdDays">00</span>
+              <span class="countdown-lbl">NGÀY</span>
+            </div>
+            <div class="countdown-colon">:</div>
+            <div class="countdown-box">
+              <span class="countdown-val" id="cdHours">00</span>
+              <span class="countdown-lbl">GIỜ</span>
+            </div>
+            <div class="countdown-colon">:</div>
+            <div class="countdown-box">
+              <span class="countdown-val" id="cdMinutes">00</span>
+              <span class="countdown-lbl">PHÚT</span>
+            </div>
+            <div class="countdown-colon">:</div>
+            <div class="countdown-box">
+              <span class="countdown-val" id="cdSeconds">00</span>
+              <span class="countdown-lbl">GIÂY</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Khối Cơ Cấu Giải Thưởng Chính Thức (Hiện khi Admin đã công bố) -->
+        <div class="official-prizes-section" id="officialPrizesSection">
+          <div class="section-title-bar">
+            <div class="title-with-icon">
+              <span class="icon">🎁</span>
+              <h3>Cơ Cấu Giải Thưởng Chính Thức</h3>
+            </div>
+            <span class="badge badge-success" id="prizesAnnounceBadge">Đã Công Bố Giải Thưởng</span>
+          </div>
+          <div class="official-prizes-grid" id="officialPrizesGrid">
+            <!-- Render động từ UI -->
           </div>
         </div>
 
@@ -160,6 +226,15 @@
             </div>
 
             <div class="panel-body">
+              <!-- Banner Khóa Cổng Nộp Bot khi hết hạn hoặc admin đóng -->
+              <div class="submission-lock-banner" id="submissionLockBanner" style="display: none;">
+                <div class="lock-icon">🔒</div>
+                <div class="lock-content">
+                  <h4 id="submissionLockTitle">Cổng Nộp Bot Đang Tạm Khóa</h4>
+                  <p id="submissionLockDesc">Thời hạn nộp bot giải đấu hiện đang đóng hoặc đã kết thúc. Vui lòng liên hệ Quản trị viên để biết thêm chi tiết.</p>
+                </div>
+              </div>
+
               <div class="form-group">
                 <label for="bot-name">Tên Bot (Bot Name):</label>
                 <input type="text" id="bot-name" class="form-control" value="CyberWarrior" placeholder="Nhập tên bot hiển thị..." />
@@ -522,6 +597,177 @@
       </div>
     </section>
 
+    <!-- ======================================================================
+         TAB 5: QUẢN TRỊ GIẢI ĐẤU (ADMIN DASHBOARD) (#view-admin)
+         ====================================================================== -->
+    <section class="tab-view" id="view-admin">
+      <div class="admin-dashboard-container">
+        
+        <!-- Admin Dashboard Header & Quick Stats -->
+        <div class="admin-header-card">
+          <div class="admin-header-title">
+            <span class="icon">⚙️</span>
+            <div>
+              <h2>Trung Tâm Quản Trị Giải Đấu (Admin Dashboard)</h2>
+              <p class="admin-subtitle">Toàn quyền điều hành lịch trình thi đấu, chạy Round-Robin matchmaking và quản lý trao giải.</p>
+            </div>
+          </div>
+          <div class="admin-stats-row">
+            <div class="admin-stat-card">
+              <span class="stat-label">Tổng Bot Đăng Ký</span>
+              <span class="stat-val" id="adminStatTotalBots">0 bot</span>
+            </div>
+            <div class="admin-stat-card">
+              <span class="stat-label">Trạng Thái Giải</span>
+              <span class="stat-val status-val" id="adminStatTourStatus">REGISTRATION</span>
+            </div>
+            <div class="admin-stat-card">
+              <span class="stat-label">Cổng Nộp Bot</span>
+              <span class="stat-val reg-val" id="adminStatRegDoor">ĐANG MỞ</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="admin-grid-layout">
+          <!-- KHỐI A: THIẾT LẬP THỜI GIAN GIẢI ĐẤU -->
+          <div class="panel admin-panel">
+            <div class="panel-header">
+              <div class="panel-title">
+                <span class="icon">📅</span>
+                <h3>A. Thiết Lập Thời Gian Giải Đấu</h3>
+              </div>
+              <span class="badge badge-primary" id="adminScheduleStatusBadge">Lịch Trình</span>
+            </div>
+            <div class="panel-body">
+              <div class="form-group">
+                <label for="adminRegStart">Thời gian MỞ nộp bài (Registration Start):</label>
+                <input type="datetime-local" id="adminRegStart" class="form-control" />
+              </div>
+              <div class="form-group">
+                <label for="adminRegEnd">Thời gian ĐÓNG nộp bài (Registration End):</label>
+                <input type="datetime-local" id="adminRegEnd" class="form-control" />
+              </div>
+              <div class="form-group">
+                <label for="adminTourStart">Thời gian BẮT ĐẦU thi đấu (Tournament Start):</label>
+                <input type="datetime-local" id="adminTourStart" class="form-control" />
+              </div>
+              <div class="form-group">
+                <label for="adminTourStatusSelect">Trạng thái giải đấu:</label>
+                <select id="adminTourStatusSelect" class="form-control">
+                  <option value="UPCOMING">Sắp Diễn Ra (UPCOMING)</option>
+                  <option value="REGISTRATION">Đang Mở Đăng Ký (REGISTRATION)</option>
+                  <option value="RUNNING">Đang Thi Đấu (RUNNING)</option>
+                  <option value="COMPLETED">Đã Hoàn Thành (COMPLETED)</option>
+                </select>
+              </div>
+
+              <div class="admin-action-buttons">
+                <button type="button" id="btnAdminSaveSchedule" class="btn btn-primary">
+                  <span class="icon">💾</span> Lưu Cấu Hình Thời Gian
+                </button>
+                <button type="button" id="btnAdminToggleReg" class="btn btn-warning">
+                  <span class="icon">🔒</span> Mở / Khóa Cổng Nộp Bot
+                </button>
+                <button type="button" id="btnAdminStartNow" class="btn btn-secondary">
+                  <span class="icon">🚀</span> Bắt Đầu Giải Đấu Ngay
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- KHỐI B: ĐIỀU HÀNH THI ĐẤU TOURNAMENT -->
+          <div class="panel admin-panel">
+            <div class="panel-header">
+              <div class="panel-title">
+                <span class="icon">⚔️</span>
+                <h3>B. Điều Hành Thi Đấu (Matchmaking)</h3>
+              </div>
+              <span class="badge badge-warning" id="adminProgressBadge">Sẵn Sàng</span>
+            </div>
+            <div class="panel-body">
+              <p class="admin-help-text">
+                Kích hoạt giải đấu chính thức: Hệ thống sẽ ghép cặp <strong>vòng tròn Round-Robin</strong> toàn bộ bot tham gia (2 lượt Red/Blue đối xứng), chia thành các <strong>Batch 10 trận</strong> và tự động thi đấu.
+              </p>
+
+              <div class="tournament-execution-card">
+                <div class="exec-stats-box">
+                  <div class="exec-stat-item">
+                    <span class="exec-lbl">Số Bot Tham Gia:</span>
+                    <strong class="exec-val" id="adminExecBotCount">0</strong>
+                  </div>
+                  <div class="exec-stat-item">
+                    <span class="exec-lbl">Quy Mô Lát Cắt:</span>
+                    <strong class="exec-val">10 trận / batch</strong>
+                  </div>
+                </div>
+
+                <div class="progress-box-wrapper">
+                  <div class="progress-info-row">
+                    <span id="adminProgressText">Chưa có giải đấu nào đang chạy</span>
+                    <strong id="adminProgressPercent">0%</strong>
+                  </div>
+                  <div class="progress-bar-container">
+                    <div class="progress-bar-fill" id="adminProgressBarFill" style="width: 0%;"></div>
+                  </div>
+                </div>
+
+                <button type="button" id="btnAdminRunTournament" class="btn btn-primary btn-block btn-lg pulse-hover">
+                  <span class="icon">⚔️</span> Chạy Toàn Bộ Giải Đấu (Round-Robin Matchmaking)
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- KHỐI C: QUẢN LÝ CƠ CẤU & TRAO GIẢI THƯỞNG -->
+        <div class="panel admin-panel admin-prizes-panel">
+          <div class="panel-header">
+            <div class="panel-title">
+              <span class="icon">🏆</span>
+              <h3>C. Quản Lý Cơ Cấu & Trao Giải Thưởng (Prize Management)</h3>
+            </div>
+            <div class="admin-prize-header-actions">
+              <button type="button" id="btnAdminToggleAnnounce" class="btn btn-sm btn-secondary">
+                <span class="icon">📢</span> Công Bố Trao Giải
+              </button>
+            </div>
+          </div>
+          <div class="panel-body">
+            <p class="admin-help-text">
+              Admin tự do cấu hình số lượng và nội dung giải thưởng. Khi bấm <strong>"Công Bố Trao Giải"</strong>, Bảng xếp hạng bên Tab 3 sẽ tự động gắn Huy hiệu & Phần thưởng cho Top 1, Top 2, Top 3...
+            </p>
+
+            <div class="table-responsive">
+              <table class="data-table prizes-edit-table" id="adminPrizesTable">
+                <thead>
+                  <tr>
+                    <th style="width: 80px;">Thứ Hạng</th>
+                    <th style="width: 90px;">Huy Hiệu</th>
+                    <th style="width: 220px;">Danh Hiệu Giải</th>
+                    <th>Nội Dung Phần Thưởng</th>
+                    <th style="width: 90px; text-align: center;">Hành Động</th>
+                  </tr>
+                </thead>
+                <tbody id="adminPrizesTableBody">
+                  <!-- Dynamic rows rendered by JS -->
+                </tbody>
+              </table>
+            </div>
+
+            <div class="prizes-table-footer">
+              <button type="button" id="btnAdminAddPrizeRow" class="btn btn-secondary btn-sm">
+                <span class="icon">➕</span> Thêm Mức Giải Thưởng
+              </button>
+              <button type="button" id="btnAdminSavePrizes" class="btn btn-primary">
+                <span class="icon">💾</span> Lưu Cấu Hình Giải Thưởng
+              </button>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
   </main>
 
   <!-- ======================================================================
@@ -544,6 +790,69 @@
       </div>
       <div class="history-modal-footer">
         <span class="modal-hint">💡 Mẹo: Bấm phím <code>Esc</code> hoặc click ra ngoài vùng tối để đóng nhanh.</span>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- ======================================================================
+       MODAL POPUP: ĐĂNG NHẬP / ĐĂNG KÝ (#authModal)
+       ====================================================================== -->
+  <dialog id="authModal" class="auth-modal" closedby="any" aria-labelledby="authModalTitle">
+    <div class="auth-modal-box">
+      <div class="auth-modal-header">
+        <div class="auth-modal-title-group">
+          <span class="icon">👤</span>
+          <h3 id="authModalTitle">Tài Khoản Đấu Trường RPS 9×9</h3>
+        </div>
+        <button type="button" id="btnCloseAuthModal" class="btn btn-sm btn-secondary" title="Đóng (Esc)">
+          ✖
+        </button>
+      </div>
+
+      <div class="auth-tab-selector">
+        <button type="button" class="auth-tab-btn active" id="tabAuthLogin">🔑 Đăng Nhập</button>
+        <button type="button" class="auth-tab-btn" id="tabAuthRegister">📝 Đăng Ký Tài Khoản</button>
+      </div>
+
+      <div class="auth-modal-body">
+        <div id="authAlert" class="auth-alert" style="display: none;"></div>
+
+        <!-- Form Đăng Nhập -->
+        <form id="loginForm" class="auth-form" onsubmit="return false;">
+          <div class="form-group">
+            <label for="loginUsername">Tên đăng nhập:</label>
+            <input type="text" id="loginUsername" class="form-control" placeholder="Ví dụ: admin hoặc user1" autocomplete="username" required />
+          </div>
+          <div class="form-group">
+            <label for="loginPassword">Mật khẩu:</label>
+            <input type="password" id="loginPassword" class="form-control" placeholder="Nhập mật khẩu..." autocomplete="current-password" required />
+          </div>
+          <div class="auth-hint">
+            <span>💡 Tài khoản Admin mặc định: <code>admin</code> / <code>admin123</code></span>
+          </div>
+          <button type="submit" id="btnLoginSubmit" class="btn btn-primary btn-block btn-lg">
+            <span class="icon">🔑</span> Đăng Nhập Ngay
+          </button>
+        </form>
+
+        <!-- Form Đăng Ký -->
+        <form id="registerForm" class="auth-form" style="display: none;" onsubmit="return false;">
+          <div class="form-group">
+            <label for="regUsername">Tên đăng nhập mới (tối thiểu 3 ký tự):</label>
+            <input type="text" id="regUsername" class="form-control" placeholder="Nhập tên đăng nhập..." autocomplete="username" required />
+          </div>
+          <div class="form-group">
+            <label for="regPassword">Mật khẩu (tối thiểu 6 ký tự):</label>
+            <input type="password" id="regPassword" class="form-control" placeholder="Nhập mật khẩu..." autocomplete="new-password" required />
+          </div>
+          <div class="form-group">
+            <label for="regConfirmPassword">Xác nhận mật khẩu:</label>
+            <input type="password" id="regConfirmPassword" class="form-control" placeholder="Nhập lại mật khẩu..." autocomplete="new-password" required />
+          </div>
+          <button type="submit" id="btnRegisterSubmit" class="btn btn-primary btn-block btn-lg">
+            <span class="icon">✨</span> Tạo Tài Khoản
+          </button>
+        </form>
       </div>
     </div>
   </dialog>
