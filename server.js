@@ -21,23 +21,38 @@
  *      để giao diện Bảng xếp hạng không bao giờ gặp lỗi `undefined`.
  */
 
+import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
-import fs from 'fs';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 
 import { 
   GUARDIAN_AND_STRIKER_BOT_CODE, 
   HUNTER_BOT_CODE, 
-  RUSHER_BOT_CODE,
+  RUSHER_BOT_CODE, 
   RANDOM_BOT_CODE 
 } from './botRunner.js';
 import { playMatch, SCORING } from './tournamentEngine.js';
+import db, { 
+  normalizePlayerRecord, 
+  normalizeTournamentRecord, 
+  normalizeUserRecord, 
+  hashPassword, 
+  verifyPassword 
+} from './db.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// Bắt các lỗi unhandled để server hoạt động bền bỉ, không crash ngoài ý muốn
+process.on('uncaughtException', (err) => {
+  console.error('💥 [Uncaught Exception]:', err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('💥 [Unhandled Rejection]:', reason);
+});
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -50,182 +65,149 @@ app.use(express.urlencoded({ extended: true }));
 app.use(express.static(__dirname));
 
 // ============================================================================
-// 1. LƯU TRỮ DỮ LIỆU BỀN VỮNG (PERSISTENCE) & CHUẨN HÓA BOT RECORD
+// 1. KHỞI TẠO LỚP LƯU TRỮ DỮ LIỆU ĐỘC LẬP (DATABASE SERVICE / REPOSITORY)
 // ============================================================================
-const DATA_DIR = path.join(__dirname, 'data');
-const PLAYERS_FILE = path.join(DATA_DIR, 'players.json');
-const MATCHES_FILE = path.join(DATA_DIR, 'matches.json');
-const USERS_FILE = path.join(DATA_DIR, 'users.json');
-const TOURNAMENT_FILE = path.join(DATA_DIR, 'tournament.json');
+// Tự động kết nối Supabase Cloud nếu có cấu hình trong .env,
+// hoặc chạy chế độ In-Memory RAM an toàn (0% ghi đĩa cục bộ).
+await db.init();
 
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-}
-
-// 5 Bot mẫu hệ thống sẵn có
-const DEFAULT_SYSTEM_BOTS = [
-  { id: 'bot_guardian_god', name: 'Titan Guardian AI', author: 'Grandmaster AI', code: GUARDIAN_AND_STRIKER_BOT_CODE, score: 60, wins: 20, draws: 0, losses: 0, errors: 0 },
-  { id: 'bot_rusher_prime', name: 'Blitz Rusher AI', author: 'Master AI', code: RUSHER_BOT_CODE, score: 45, wins: 15, draws: 0, losses: 5, errors: 0 },
-  { id: 'bot_hunter_alpha', name: 'Shadow Hunter AI', author: 'Elite AI', code: HUNTER_BOT_CODE, score: 30, wins: 10, draws: 0, losses: 10, errors: 0 },
-  { id: 'bot_hunter_beta', name: 'Forest Hunter AI', author: 'Warrior AI', code: HUNTER_BOT_CODE, score: 18, wins: 6, draws: 0, losses: 14, errors: 0 },
-  { id: 'bot_random_rookie', name: 'Lucky Rookie AI', author: 'Academy AI', code: RANDOM_BOT_CODE, score: 6, wins: 2, draws: 0, losses: 18, errors: 0 }
-];
-
-// In-memory Database
-const dbPlayers = new Map(); // botId -> Normalized Player/Bot Record
-const dbMatches = new Map(); // matchId -> Match Log
-const dbUsers = new Map(); // userId -> { id, username, passwordHash, salt, role: 'user' | 'admin', createdAt }
+// Tham chiếu Maps bộ nhớ đệm đồng bộ từ Database Service
+const dbPlayers = db.players;
+const dbMatches = db.matches;
+const dbTournaments = db.tournaments;
+const dbUsers = db.users;
 const activeSessions = new Map(); // token -> { userId, username, role, expiresAt }
 
 // ============================================================================
 // HỆ THỐNG XÁC THỰC MÃ HÓA & QUẢN LÝ NGƯỜI DÙNG (AUTH & ROLES)
 // ============================================================================
 
-function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
-  const hash = crypto.scryptSync(password, salt, 64).toString('hex');
-  return { hash, salt };
-}
-
-function verifyPassword(password, hash, salt) {
-  try {
-    const calc = crypto.scryptSync(password, salt, 64).toString('hex');
-    return crypto.timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(calc, 'hex'));
-  } catch (err) {
-    return false;
-  }
-}
-
 function loadUsers() {
-  try {
-    if (fs.existsSync(USERS_FILE)) {
-      const raw = fs.readFileSync(USERS_FILE, 'utf-8');
-      const list = JSON.parse(raw);
-      if (Array.isArray(list)) {
-        for (const u of list) {
-          if (u && u.id) {
-            dbUsers.set(u.id, u);
-          }
-        }
-        console.log(`[Auth] Đã tải ${dbUsers.size} người dùng từ ${USERS_FILE}`);
-      }
-    }
-  } catch (err) {
-    console.error('[Auth] Lỗi khi đọc users.json:', err.message);
-  }
-
-  // Khởi tạo tài khoản Admin mặc định nếu chưa có
-  let hasAdmin = false;
-  for (const u of dbUsers.values()) {
-    if (u.username && u.username.toLowerCase() === 'admin') {
-      hasAdmin = true;
-      break;
-    }
-  }
-
-  if (!hasAdmin) {
-    const { hash, salt } = hashPassword('admin123');
-    const adminUser = {
-      id: 'user_admin_default',
-      username: 'admin',
-      passwordHash: hash,
-      salt: salt,
-      role: 'admin',
-      createdAt: Date.now()
-    };
-    dbUsers.set(adminUser.id, adminUser);
-    saveUsers();
-    console.log('[Auth] 👑 Đã khởi tạo tài khoản Admin mặc định: admin / admin123');
-  }
+  // Dữ liệu người dùng được nạp và đồng bộ tự động qua db.init()
 }
 
-function saveUsers() {
-  try {
-    const list = Array.from(dbUsers.values());
-    fs.writeFileSync(USERS_FILE, JSON.stringify(list, null, 2), 'utf-8');
-  } catch (err) {
-    console.error('[Auth] Lỗi khi lưu users.json:', err.message);
+function saveUsers(user) {
+  if (user) {
+    db.saveUser(user).catch(() => {});
   }
 }
 
 // ============================================================================
-// HỆ THỐNG CẤU HÌNH & TRẠNG THÁI GIẢI ĐẤU (TOURNAMENT MANAGEMENT)
+// HỆ THỐNG CẤU HÌNH & VẬN HÀNH GIẢI ĐẤU ĐA VÒNG (MULTI-STAGE TOURNAMENT ENGINE)
 // ============================================================================
 
-let tournamentState = {
-  isOpenForRegistration: true,
-  registrationStart: new Date(Date.now() - 3600 * 1000 * 24).toISOString(),
-  registrationEnd: new Date(Date.now() + 3600 * 1000 * 24 * 7).toISOString(),
-  tournamentStart: new Date(Date.now() + 3600 * 1000 * 24 * 8).toISOString(),
-  status: 'REGISTRATION', // 'UPCOMING' | 'REGISTRATION' | 'RUNNING' | 'COMPLETED'
-  prizes: [
-    { id: 'prize_1', rank: 1, title: 'Hạng 1 (Quán Quân)', reward: 'Cúp Vàng + 500.000 VNĐ', badge: '🥇' },
-    { id: 'prize_2', rank: 2, title: 'Hạng 2 (Á Quân)', reward: 'Cúp Bạc + 300.000 VNĐ', badge: '🥈' },
-    { id: 'prize_3', rank: 3, title: 'Hạng 3 (Quý Quân)', reward: 'Huy Chương Đồng + 100.000 VNĐ', badge: '🥉' },
-    { id: 'prize_4', rank: 4, title: 'Giải Sáng Tạo', reward: 'Kỷ Niệm Chương + 50.000 VNĐ', badge: '✨' }
-  ],
-  isPrizeAnnounced: true,
-  tournamentProgress: {
-    isRunning: false,
-    totalMatches: 0,
-    completedMatches: 0,
-    currentBatch: 0,
-    totalBatches: 0,
-    percentage: 0,
-    statusText: 'Sẵn sàng'
-  }
-};
+function loadTournaments() {
+  // Giải đấu được nạp và đồng bộ tự động qua db.init()
+}
 
-function loadTournamentConfig() {
-  try {
-    if (fs.existsSync(TOURNAMENT_FILE)) {
-      const raw = fs.readFileSync(TOURNAMENT_FILE, 'utf-8');
-      const loaded = JSON.parse(raw);
-      if (loaded && typeof loaded === 'object') {
-        tournamentState = {
-          ...tournamentState,
-          ...loaded,
-          tournamentProgress: {
-            ...tournamentState.tournamentProgress,
-            isRunning: false,
-            statusText: 'Sẵn sàng'
-          }
-        };
-        console.log(`[Tournament] Đã tải cấu hình giải đấu từ ${TOURNAMENT_FILE}`);
-        return;
-      }
+function saveTournaments(tour) {
+  if (tour) {
+    db.saveTournament(tour).catch(err => {
+      console.error('[Tournaments] Lỗi khi lưu tournament:', err.message);
+    });
+  } else {
+    for (const t of dbTournaments.values()) {
+      db.saveTournament(t).catch(() => {});
     }
-  } catch (err) {
-    console.error('[Tournament] Lỗi khi đọc tournament.json:', err.message);
-  }
-  saveTournamentConfig();
-}
-
-function saveTournamentConfig() {
-  try {
-    const toSave = {
-      isOpenForRegistration: tournamentState.isOpenForRegistration,
-      registrationStart: tournamentState.registrationStart,
-      registrationEnd: tournamentState.registrationEnd,
-      tournamentStart: tournamentState.tournamentStart,
-      status: tournamentState.status,
-      prizes: tournamentState.prizes,
-      isPrizeAnnounced: tournamentState.isPrizeAnnounced
-    };
-    fs.writeFileSync(TOURNAMENT_FILE, JSON.stringify(toSave, null, 2), 'utf-8');
-  } catch (err) {
-    console.error('[Tournament] Lỗi khi lưu tournament.json:', err.message);
   }
 }
 
-function isRegistrationOpenNow() {
-  if (!tournamentState.isOpenForRegistration) return false;
+// Lấy giải đấu Toàn Cầu chính đang hoạt động
+function getPrimaryGlobalTournament() {
+  for (const t of dbTournaments.values()) {
+    if (t.type === 'GLOBAL' && t.status !== 'DELETED') return t;
+  }
+  const all = Array.from(dbTournaments.values());
+  return all[0] || null;
+}
+
+// Kiểm tra thời hạn đăng ký của một giải đấu
+function isTournamentRegistrationOpen(tour) {
+  if (!tour) return false;
+  if (!tour.isOpenForRegistration || tour.status === 'PAUSED' || tour.status === 'COMPLETED') return false;
   const now = Date.now();
-  const start = new Date(tournamentState.registrationStart).getTime();
-  const end = new Date(tournamentState.registrationEnd).getTime();
+  const start = new Date(tour.registrationStart).getTime();
+  const end = new Date(tour.registrationEnd).getTime();
 
   if (!isNaN(start) && now < start) return false;
   if (!isNaN(end) && now > end) return false;
   return true;
+}
+
+// Giữ lại tournamentState cho các module tương thích ngược
+const tournamentState = {
+  get isOpenForRegistration() {
+    const t = getPrimaryGlobalTournament();
+    return t ? t.isOpenForRegistration : true;
+  },
+  set isOpenForRegistration(val) {
+    const t = getPrimaryGlobalTournament();
+    if (t) { t.isOpenForRegistration = val; saveTournaments(); }
+  },
+  get registrationStart() {
+    const t = getPrimaryGlobalTournament();
+    return t ? t.registrationStart : new Date().toISOString();
+  },
+  set registrationStart(val) {
+    const t = getPrimaryGlobalTournament();
+    if (t) { t.registrationStart = val; saveTournaments(); }
+  },
+  get registrationEnd() {
+    const t = getPrimaryGlobalTournament();
+    return t ? t.registrationEnd : new Date().toISOString();
+  },
+  set registrationEnd(val) {
+    const t = getPrimaryGlobalTournament();
+    if (t) { t.registrationEnd = val; saveTournaments(); }
+  },
+  get tournamentStart() {
+    const t = getPrimaryGlobalTournament();
+    return t ? (t.registrationEnd || new Date().toISOString()) : new Date().toISOString();
+  },
+  get status() {
+    const t = getPrimaryGlobalTournament();
+    return t ? t.status : 'REGISTRATION';
+  },
+  set status(val) {
+    const t = getPrimaryGlobalTournament();
+    if (t) { t.status = val; saveTournaments(); }
+  },
+  get prizes() {
+    const t = getPrimaryGlobalTournament();
+    return t ? t.prizes : [];
+  },
+  set prizes(val) {
+    const t = getPrimaryGlobalTournament();
+    if (t) { t.prizes = val; saveTournaments(); }
+  },
+  get isPrizeAnnounced() {
+    const t = getPrimaryGlobalTournament();
+    return t ? t.isPrizeAnnounced : true;
+  },
+  set isPrizeAnnounced(val) {
+    const t = getPrimaryGlobalTournament();
+    if (t) { t.isPrizeAnnounced = val; saveTournaments(); }
+  },
+  get tournamentProgress() {
+    const t = getPrimaryGlobalTournament();
+    return t && t.progress ? t.progress : { isRunning: false, totalMatches: 0, completedMatches: 0, percentage: 0, statusText: 'Sẵn sàng' };
+  },
+  set tournamentProgress(val) {
+    const t = getPrimaryGlobalTournament();
+    if (t) { t.progress = val; }
+  }
+};
+
+function saveTournamentConfig() {
+  saveTournaments();
+}
+
+function loadTournamentConfig() {
+  loadTournaments();
+}
+
+function isRegistrationOpenNow() {
+  return isTournamentRegistrationOpen(getPrimaryGlobalTournament());
 }
 
 // Middleware xác thực Token & phân quyền
@@ -245,7 +227,11 @@ function extractUserFromReq(req) {
 function authenticateToken(req, res, next) {
   const user = extractUserFromReq(req);
   if (!user) {
-    return res.status(401).json({ error: 'Chưa đăng nhập hoặc phiên làm việc đã hết hạn. Vui lòng đăng nhập lại.' });
+    return res.status(401).json({
+      success: false,
+      error: 'Vui lòng đăng nhập để nộp bot!',
+      message: 'Vui lòng đăng nhập để nộp bot!'
+    });
   }
   req.user = user;
   next();
@@ -263,204 +249,24 @@ function requireAdmin(req, res, next) {
   next();
 }
 
-/**
- * Chuẩn hóa thông tin Bot/Player để đảm bảo luôn có đầy đủ cả
- * `id`, `botId`, `playerId`, `name`, `botName`, `playerName` và `lastMatchId`
- */
-function normalizePlayerRecord(raw) {
-  const id = raw.botId || raw.playerId || raw.id || `bot_${Date.now()}`;
-  const displayName = (raw.botName || raw.name || raw.playerName || 'Unnamed Bot').trim();
-  const authorName = (raw.author || raw.playerName || 'Anonymous').trim();
-  const language = (raw.language || 'javascript').toLowerCase();
-  const roomId = (raw.roomId || 'PUBLIC').trim().toUpperCase();
 
-  const wins = Number(raw.wins) || 0;
-  const draws = Number(raw.draws) || 0;
-  const losses = Number(raw.losses) || 0;
-  const errors = Number(raw.errors) || 0;
-  const score = Number(raw.score) || 0;
-  const matchesPlayed = Number(raw.matchesPlayed) || (wins + draws + losses);
-
-  return {
-    id,
-    botId: id,
-    playerId: id,
-    name: displayName,
-    botName: displayName,
-    playerName: displayName,
-    author: authorName,
-    language,
-    botCode: raw.botCode || raw.code || RANDOM_BOT_CODE,
-    score,
-    wins,
-    draws,
-    losses,
-    errors,
-    matchesPlayed,
-    roomId,
-    lastMatchId: raw.lastMatchId || null,
-    updatedAt: raw.updatedAt || Date.now()
-  };
-}
-
-/**
- * Đảm bảo mọi bot trong hệ thống đều có `lastMatchId` hợp lệ trỏ tới một trận đấu có thực trong `dbMatches`:
- * 1. Quét toàn bộ `dbMatches` để cập nhật `lastMatchId` mới nhất cho cả `botRed` và `botBlue`.
- * 2. Nếu hệ thống chưa có trận đấu mẫu nào, tự động khởi tạo 1 trận mẫu.
- * 3. Với các bot mẫu / bot khởi tạo sẵn chưa có `lastMatchId` (hoặc `lastMatchId` không còn trong `dbMatches`),
- *    gán sẵn `lastMatchId` hợp lệ từ trận đấu trong hệ thống.
- */
 function syncAndEnsureLastMatchIds() {
-  // Nếu chưa có bất kỳ trận đấu nào trong dbMatches, tạo ngay 1 trận đấu mẫu giữa 2 bot hệ thống
-  if (dbMatches.size === 0) {
-    const botA = DEFAULT_SYSTEM_BOTS[0];
-    const botB = DEFAULT_SYSTEM_BOTS[1];
-    const sampleMatch = playMatch(
-      { id: botA.id, name: botA.name, author: botA.author, language: 'javascript', code: botA.code },
-      { id: botB.id, name: botB.name, author: botB.author, language: 'javascript', code: botB.code },
-      { timeoutMs: 200 }
-    );
-    dbMatches.set(sampleMatch.id, {
-      ...sampleMatch,
-      roomId: 'PUBLIC',
-      timestamp: Date.now()
-    });
-  }
-
-  // Bước 1: Quét qua toàn bộ lịch sử trận đấu (từ cũ đến mới) để gán lastMatchId cho cả 2 bên Red & Blue
-  let fallbackSampleMatchId = null;
-  for (const m of dbMatches.values()) {
-    if (!m || !m.id) continue;
-    fallbackSampleMatchId = m.id;
-
-    const redId = m.botRed?.id || m.botRed?.botId;
-    const blueId = m.botBlue?.id || m.botBlue?.botId;
-
-    if (redId && dbPlayers.has(redId)) {
-      dbPlayers.get(redId).lastMatchId = m.id;
-    }
-    if (blueId && dbPlayers.has(blueId)) {
-      dbPlayers.get(blueId).lastMatchId = m.id;
-    }
-  }
-
-  // Bước 2: Đảm bảo không có bot nào bị thiếu hoặc trỏ tới lastMatchId không tồn tại
-  for (const bot of dbPlayers.values()) {
-    if (!bot.lastMatchId || !dbMatches.has(bot.lastMatchId)) {
-      bot.lastMatchId = fallbackSampleMatchId;
-    }
-  }
+  // Được xử lý và đảm bảo tự động trong db.init()
 }
 
-/**
- * Tải dữ liệu từ ổ đĩa khi khởi động server
- */
 function loadPersistedData() {
-  // Tải danh sách người dùng và cấu hình giải đấu
-  loadUsers();
-  loadTournamentConfig();
-
-  try {
-    if (fs.existsSync(PLAYERS_FILE)) {
-      const raw = fs.readFileSync(PLAYERS_FILE, 'utf-8');
-      const list = JSON.parse(raw);
-      if (Array.isArray(list)) {
-        for (const item of list) {
-          const normalized = normalizePlayerRecord(item);
-          dbPlayers.set(normalized.botId, normalized);
-        }
-        console.log(`[Persistence] Đã tải và chuẩn hóa ${dbPlayers.size} bots từ ${PLAYERS_FILE}`);
-      }
-    }
-  } catch (err) {
-    console.error('[Persistence] Lỗi khi đọc players.json:', err.message);
-  }
-
-  // Đảm bảo các bot mẫu hệ thống luôn có mặt
-  for (const b of DEFAULT_SYSTEM_BOTS) {
-    if (!dbPlayers.has(b.id)) {
-      const sysRecord = normalizePlayerRecord({
-        id: b.id,
-        botId: b.id,
-        playerId: b.id,
-        name: b.name,
-        botName: b.name,
-        playerName: b.name,
-        author: b.author,
-        language: 'javascript',
-        botCode: b.code,
-        score: b.score,
-        wins: b.wins,
-        draws: b.draws,
-        losses: b.losses,
-        errors: b.errors,
-        matchesPlayed: b.wins + b.draws + b.losses,
-        roomId: 'PUBLIC',
-        updatedAt: Date.now()
-      });
-      dbPlayers.set(b.id, sysRecord);
-    }
-  }
-
-  try {
-    if (fs.existsSync(MATCHES_FILE)) {
-      const raw = fs.readFileSync(MATCHES_FILE, 'utf-8');
-      const list = JSON.parse(raw);
-      if (Array.isArray(list)) {
-        for (const m of list) {
-          dbMatches.set(m.id, m);
-        }
-        console.log(`[Persistence] Đã tải ${dbMatches.size} trận đấu từ ${MATCHES_FILE}`);
-      }
-    }
-  } catch (err) {
-    console.error('[Persistence] Lỗi khi đọc matches.json:', err.message);
-  }
-
-  // Đồng bộ và đảm bảo mọi bot đều có lastMatchId hợp lệ
-  syncAndEnsureLastMatchIds();
-
-  // Ghi lại bản đã chuẩn hóa xuống đĩa
-  savePersistedData();
+  // Khởi tạo hoàn toàn tự động qua db.init()
 }
 
-/**
- * Dọn dẹp bớt trận đấu cũ khi vượt quá giới hạn, nhưng BẢO VỆ các trận đấu đang là `lastMatchId` của bất kỳ bot nào
- */
-function pruneOldMatches(maxMatches = 300) {
-  if (dbMatches.size <= maxMatches) return;
-
-  const protectedMatchIds = new Set();
-  for (const p of dbPlayers.values()) {
-    if (p.lastMatchId) protectedMatchIds.add(p.lastMatchId);
-  }
-
-  for (const key of dbMatches.keys()) {
-    if (dbMatches.size <= maxMatches) break;
-    if (!protectedMatchIds.has(key)) {
-      dbMatches.delete(key);
-    }
+function pruneOldMatches(maxMatches = 100) {
+  if (db.adapter && typeof db.adapter.pruneOldMatches === 'function') {
+    db.adapter.pruneOldMatches(maxMatches);
   }
 }
 
-/**
- * Lưu dữ liệu bền vững ra file
- */
 function savePersistedData() {
-  try {
-    pruneOldMatches(300);
-    const playersList = Array.from(dbPlayers.values()).map(normalizePlayerRecord);
-    fs.writeFileSync(PLAYERS_FILE, JSON.stringify(playersList, null, 2), 'utf-8');
-
-    const matchesList = Array.from(dbMatches.values());
-    fs.writeFileSync(MATCHES_FILE, JSON.stringify(matchesList, null, 2), 'utf-8');
-  } catch (err) {
-    console.error('[Persistence] Lỗi khi lưu dữ liệu:', err.message);
-  }
+  // Hoàn toàn không ghi file cục bộ. db.js tự động xử lý lưu trữ bền vững (Supabase Cloud / In-Memory RAM).
 }
-
-// Khởi chạy nạp dữ liệu khi server start
-loadPersistedData();
 
 // ============================================================================
 // SERVER-SENT EVENTS (SSE) BROADCASTING
@@ -509,221 +315,476 @@ function getSortedLeaderboard(roomId = 'PUBLIC') {
 }
 
 // ============================================================================
-// 2. THUẬT TOÁN ĐIỀU PHỐI HÀNG ĐỢI XOAY VÒNG (ROUND-ROBIN BATCH SCHEDULER)
+// 2. THUẬT TOÁN GHÉP ĐẤU VÒNG TRÒN 1 LƯỢT (C_n^2) & HÀNG CHỜ ĐẤU TỰ ĐỘNG
 // ============================================================================
 
 /**
- * Hàng đợi xoay vòng:
- * Mỗi phần tử có cấu trúc:
+ * Trợ thủ canonical key cho cặp bot: luôn sắp xếp thứ tự ID để Bot_A và Bot_B
+ * chỉ tạo ra đúng 1 key nhận diện duy nhất `idA__idB`.
+ */
+function getMatchPairKey(id1, id2) {
+  return [String(id1), String(id2)].sort().join('__');
+}
+
+/**
+ * Cấu hình hệ thống: Hàng Chờ Đấu Tự Động (Auto-Queue on Submit)
+ * Mặc định: BẬT (true). Admin có thể bật/tắt linh hoạt qua API.
+ */
+let isAutoQueueEnabled = true;
+
+/**
+ * Hàng đợi các trận đấu chưa đấu:
+ * Mỗi phần tử là 1 trận đấu cụ thể:
  * {
- *   botId: string,
+ *   id: string,
+ *   pairKey: string,
+ *   redId: string,
+ *   blueId: string,
  *   roomId: string,
- *   remainingOpponents: [oppId1, oppId2, ...],
- *   matchCounter: number
+ *   tournamentId: string|null,
+ *   stageIndex: number
  * }
  */
-const submissionQueue = [];
+const matchQueue = [];
+// Alias giữ tương thích ngược với các hàm/endpoint cũ
+const submissionQueue = matchQueue;
 let isWorkerRunning = false;
 
 /**
- * Đưa một bot vào hàng đợi xoay vòng để đấu với toàn bộ đối thủ khác
+ * Kiểm tra xem cặp 2 bot đã từng thi đấu với nhau trong phòng / giải đấu chưa
+ * (kiểm tra cả 2 chiều Red-Blue và Blue-Red).
  */
-function enqueueBotForRoundRobin(botId, roomId = 'PUBLIC') {
+async function hasMatchBeenPlayed(botId1, botId2, roomId = 'PUBLIC', tournamentId = null) {
   const normRoom = (roomId || 'PUBLIC').trim().toUpperCase();
 
-  // Lấy danh sách toàn bộ đối thủ trong cùng phòng (trừ chính nó)
-  let opponents = Array.from(dbPlayers.values())
-    .filter(p => p.botId !== botId && (normRoom === 'PUBLIC' || p.roomId === normRoom))
-    .map(p => p.botId);
-
-  // Nếu phòng riêng chưa có đối thủ nào khác, lấy các bot mẫu hệ thống làm đối thủ
-  if (opponents.length === 0) {
-    opponents = DEFAULT_SYSTEM_BOTS
-      .filter(b => b.id !== botId)
-      .map(b => b.id);
+  // 1. Kiểm tra cache RAM dbMatches trước
+  for (const m of dbMatches.values()) {
+    const rId = m.botRed?.id || m.botRed?.botId;
+    const bId = m.botBlue?.id || m.botBlue?.botId;
+    if ((rId === botId1 && bId === botId2) || (rId === botId2 && bId === botId1)) {
+      if (tournamentId && m.tournamentId === tournamentId) return true;
+      if (!tournamentId && (m.roomId || 'PUBLIC').trim().toUpperCase() === normRoom) return true;
+    }
   }
 
-  // Nếu bot này đang có một job cũ chưa chạy xong trong hàng đợi, cập nhật lại danh sách đối thủ cho nó
-  const existingJobIndex = submissionQueue.findIndex(j => j.botId === botId);
-  if (existingJobIndex !== -1) {
-    submissionQueue[existingJobIndex].remainingOpponents = opponents;
-    submissionQueue[existingJobIndex].roomId = normRoom;
-    console.log(`🔄 [Scheduler] Cập nhật lại danh sách ${opponents.length} đối thủ cho bot "${botId}" trong hàng đợi.`);
-  } else {
-    submissionQueue.push({
-      botId,
-      roomId: normRoom,
-      remainingOpponents: opponents,
-      matchCounter: 0
-    });
-    console.log(`📥 [Scheduler] Bot "${botId}" đã vào hàng đợi với ${opponents.length} đối thủ. Hàng đợi hiện có: ${submissionQueue.length} bot.`);
+  // 2. Kiểm tra database Supabase nếu có
+  if (db.adapter && db.adapter.client) {
+    try {
+      let query = db.adapter.client.from('matches').select('id, tournament_id, room_id')
+        .or(`and(red_bot_id.eq.${botId1},blue_bot_id.eq.${botId2}),and(red_bot_id.eq.${botId2},blue_bot_id.eq.${botId1})`);
+      if (tournamentId) {
+        query = query.eq('tournament_id', tournamentId);
+      } else if (normRoom !== 'PUBLIC') {
+        query = query.eq('room_id', normRoom);
+      }
+      const { data, error } = await query.limit(1);
+      if (!error && Array.isArray(data) && data.length > 0) {
+        return true;
+      }
+    } catch (e) {
+      // Bỏ qua lỗi truy vấn nhẹ
+    }
   }
 
-  // Kích hoạt Worker nếu đang nghỉ (idle)
-  if (!isWorkerRunning) {
-    processQueue();
+  return false;
+}
+
+/**
+ * Kiểm tra xem trận đấu giữa 2 bot đã đang nằm trong hàng chờ thi đấu chưa
+ */
+function isMatchInQueue(botId1, botId2, roomId = 'PUBLIC', tournamentId = null) {
+  const key = getMatchPairKey(botId1, botId2);
+  const normRoom = (roomId || 'PUBLIC').trim().toUpperCase();
+  return matchQueue.some(item => {
+    const itemKey = getMatchPairKey(item.redId, item.blueId);
+    if (itemKey !== key) return false;
+    if (tournamentId) {
+      return item.tournamentId === tournamentId;
+    }
+    return (item.roomId || 'PUBLIC').trim().toUpperCase() === normRoom;
+  });
+}
+
+/**
+ * Tính toán và đồng bộ lại điểm số cho toàn bộ bot trong phòng / giải đấu
+ * từ các trận đấu còn lại (dùng khi một bot cập nhật code mới và reset lịch sử thi đấu).
+ */
+async function recalculateStats(roomId = 'PUBLIC', tournamentId = null) {
+  const normRoom = (roomId || 'PUBLIC').trim().toUpperCase();
+
+  // 1. Lấy danh sách bots thuộc scope
+  const filter = {};
+  if (tournamentId) filter.tournamentId = tournamentId;
+  else if (normRoom !== 'PUBLIC') filter.roomId = normRoom;
+
+  const playersInScope = await db.getPlayers(filter);
+
+  // Reset điểm số của các bot trong scope
+  for (const p of playersInScope) {
+    p.score = 0;
+    p.wins = 0;
+    p.draws = 0;
+    p.losses = 0;
+    p.errors = 0;
+    p.matchesPlayed = 0;
+    p.lastMatchId = null;
+  }
+
+  // 2. Lấy các trận đấu còn lại từ DB
+  const remainingMatches = await db.getRecentMatches({ roomId: normRoom, tournamentId }, 5000);
+  remainingMatches.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+
+  const playerMap = new Map();
+  for (const p of playersInScope) {
+    playerMap.set(p.id, p);
+    if (p.botId) playerMap.set(p.botId, p);
+  }
+
+  for (const m of remainingMatches) {
+    const redId = m.botRed?.id || m.botRed?.botId;
+    const blueId = m.botBlue?.id || m.botBlue?.botId;
+    const pRed = playerMap.get(redId);
+    const pBlue = playerMap.get(blueId);
+
+    if (pRed) {
+      pRed.matchesPlayed = (pRed.matchesPlayed || 0) + 1;
+      pRed.errors = (pRed.errors || 0) + (m.botRed?.errors || 0);
+      pRed.lastMatchId = m.id;
+    }
+    if (pBlue) {
+      pBlue.matchesPlayed = (pBlue.matchesPlayed || 0) + 1;
+      pBlue.errors = (pBlue.errors || 0) + (m.botBlue?.errors || 0);
+      pBlue.lastMatchId = m.id;
+    }
+
+    if (m.winner === 'RED') {
+      if (pRed) { pRed.wins = (pRed.wins || 0) + 1; pRed.score = (pRed.score || 0) + SCORING.WIN; }
+      if (pBlue) { pBlue.losses = (pBlue.losses || 0) + 1; pBlue.score = (pBlue.score || 0) + SCORING.LOSS; }
+    } else if (m.winner === 'BLUE') {
+      if (pBlue) { pBlue.wins = (pBlue.wins || 0) + 1; pBlue.score = (pBlue.score || 0) + SCORING.WIN; }
+      if (pRed) { pRed.losses = (pRed.losses || 0) + 1; pRed.score = (pRed.score || 0) + SCORING.LOSS; }
+    } else {
+      if (pRed) { pRed.draws = (pRed.draws || 0) + 1; pRed.score = (pRed.score || 0) + SCORING.DRAW; }
+      if (pBlue) { pBlue.draws = (pBlue.draws || 0) + 1; pBlue.score = (pBlue.score || 0) + SCORING.DRAW; }
+    }
+  }
+
+  // Lưu lại các players và cập nhật dbPlayers
+  for (const p of playersInScope) {
+    dbPlayers.set(p.id, p);
+    if (p.botId) dbPlayers.set(p.botId, p);
+    await db.savePlayer(p);
+  }
+
+  // Đồng bộ với stage.standings trong tournament
+  if (tournamentId) {
+    const tour = dbTournaments.get(tournamentId);
+    if (tour && Array.isArray(tour.stages)) {
+      const stage = tour.stages[0];
+      if (stage && Array.isArray(stage.standings)) {
+        for (const st of stage.standings) {
+          const p = playerMap.get(st.botId);
+          if (p) {
+            st.score = p.score;
+            st.wins = p.wins;
+            st.draws = p.draws;
+            st.losses = p.losses;
+            st.errors = p.errors;
+            st.matchesPlayed = p.matchesPlayed;
+            st.lastMatchId = p.lastMatchId;
+          }
+        }
+        stage.standings.sort((a, b) => b.score - a.score || b.wins - a.wins || a.errors - b.errors);
+        await db.saveTournament(tour);
+      }
+    }
   }
 }
 
 /**
- * Worker xử lý hàng đợi xoay vòng theo lát cắt (Chunking tối đa BATCH_SIZE = 10 trận/lượt)
- * Khi hàng đợi rỗng -> tự động về trạng thái nghỉ (0% CPU).
+ * Đưa các trận đấu chưa diễn ra của 1 bot với các đối thủ trong phòng vào hàng đợi
+ * Đảm bảo mỗi cặp bot chỉ đấu ĐÚNG 1 TRẬN DUY NHẤT (Single Round-Robin C_n^2).
+ * Khi bot thứ 3 (hoặc N) nộp vào, sẽ tự động sinh trận đấu với TẤT CẢ các bot hiện có!
  */
-async function processQueue() {
-  if (isWorkerRunning) return;
+async function enqueueBotUnplayedMatches(botId, roomId = 'PUBLIC', tournamentId = null) {
+  const normRoom = (roomId || 'PUBLIC').trim().toUpperCase();
 
-  if (submissionQueue.length === 0) {
-    isWorkerRunning = false;
-    console.log(`💤 [Scheduler] Hàng đợi đã rỗng. Worker chuyển về trạng thái nghỉ (Idle 0% CPU).`);
-    return;
+  // 1. Lấy danh sách toàn bộ các bot từ Database
+  const filter = {};
+  if (tournamentId) {
+    filter.tournamentId = tournamentId;
+  } else if (normRoom !== 'PUBLIC') {
+    filter.roomId = normRoom;
+  }
+  let allBots = await db.getPlayers(filter);
+
+  // Đảm bảo cache RAM dbPlayers đồng bộ đầy đủ
+  for (const b of allBots) {
+    dbPlayers.set(b.id, b);
+    if (b.botId) dbPlayers.set(b.botId, b);
   }
 
+  // 2. Lọc danh sách đối thủ (tất cả các bot khác bot hiện tại)
+  const opponents = allBots.filter(p => (p.botId || p.id) !== botId);
+
+  let addedCount = 0;
+  for (const opp of opponents) {
+    const oppId = opp.botId || opp.id;
+    if (!oppId || oppId === botId) continue;
+
+    const alreadyPlayed = await hasMatchBeenPlayed(botId, oppId, normRoom, tournamentId);
+    const alreadyQueued = isMatchInQueue(botId, oppId, normRoom, tournamentId);
+
+    if (!alreadyPlayed && !alreadyQueued) {
+      const isBotRed = ((matchQueue.length + addedCount) % 2 === 0);
+      matchQueue.push({
+        id: `match_job_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+        pairKey: getMatchPairKey(botId, oppId),
+        redId: isBotRed ? botId : oppId,
+        blueId: isBotRed ? oppId : botId,
+        roomId: normRoom,
+        tournamentId: tournamentId || null,
+        stageIndex: 1
+      });
+      addedCount++;
+    }
+  }
+
+  console.log(`📥 [MatchQueue] Bot "${botId}" đã ghép thêm ${addedCount} trận mới vào hàng chờ (Đối thủ hiện có: ${opponents.length}). Tổng hàng đợi: ${matchQueue.length} trận.`);
+
+  // 3. Kích hoạt worker nếu đang nghỉ
+  if (matchQueue.length > 0 && !isWorkerRunning) {
+    processMatchQueue();
+  }
+
+  return addedCount;
+}
+
+/**
+ * Ghép đấu toàn bộ các cặp bot chưa từng đấu với nhau trong phòng / giải đấu
+ */
+async function enqueueAllUnplayedMatches(roomId = 'PUBLIC', tournamentId = null) {
+  const normRoom = (roomId || 'PUBLIC').trim().toUpperCase();
+  const filter = {};
+  if (tournamentId) filter.tournamentId = tournamentId;
+  else if (normRoom !== 'PUBLIC') filter.roomId = normRoom;
+
+  const eligible = await db.getPlayers(filter);
+  for (const b of eligible) {
+    dbPlayers.set(b.id, b);
+    if (b.botId) dbPlayers.set(b.botId, b);
+  }
+
+  let addedCount = 0;
+  for (let i = 0; i < eligible.length; i++) {
+    for (let j = i + 1; j < eligible.length; j++) {
+      const idA = eligible[i].botId || eligible[i].id;
+      const idB = eligible[j].botId || eligible[j].id;
+      if (!idA || !idB || idA === idB) continue;
+
+      const alreadyPlayed = await hasMatchBeenPlayed(idA, idB, normRoom, tournamentId);
+      const alreadyQueued = isMatchInQueue(idA, idB, normRoom, tournamentId);
+
+      if (!alreadyPlayed && !alreadyQueued) {
+        const isARed = ((i + j) % 2 === 0);
+        matchQueue.push({
+          id: `match_job_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+          pairKey: getMatchPairKey(idA, idB),
+          redId: isARed ? idA : idB,
+          blueId: isARed ? idB : idA,
+          roomId: normRoom,
+          tournamentId: tournamentId || null,
+          stageIndex: 1
+        });
+        addedCount++;
+      }
+    }
+  }
+
+  console.log(`⚡ [MatchQueue] Quét toàn bộ: Đã thêm ${addedCount} trận chưa đấu vào hàng đợi.`);
+  if (matchQueue.length > 0 && !isWorkerRunning) {
+    processMatchQueue();
+  }
+  return addedCount;
+}
+
+// Giữ hàm cũ để tương thích với các lệnh gọi khác nếu có
+function enqueueBotForRoundRobin(botId, roomId = 'PUBLIC') {
+  return enqueueBotUnplayedMatches(botId, roomId, null);
+}
+
+/**
+ * Worker xử lý hàng đợi trận đấu tự động, tuần tự và liên tục (Queue Consumer Auto-Runner)
+ * Đảm bảo không bao giờ bị kẹt cờ isWorkerRunning và chạy hết hàng đợi đến khi rỗng.
+ */
+async function processMatchQueue() {
+  if (isWorkerRunning) return;
   isWorkerRunning = true;
 
-  // 1. Lấy bot ở đầu hàng đợi
-  const currentJob = submissionQueue.shift();
-  const challenger = dbPlayers.get(currentJob.botId);
+  try {
+    while (matchQueue.length > 0) {
+      const job = matchQueue.shift();
+      if (!job) continue;
 
-  // Nếu bot không tồn tại hoặc không còn đối thủ nào
-  if (!challenger || !currentJob.remainingOpponents || currentJob.remainingOpponents.length === 0) {
-    isWorkerRunning = false;
-    if (submissionQueue.length > 0) {
-      setTimeout(processQueue, WORKER_REST_MS);
-    }
-    return;
-  }
+      // Lấy thông tin bot Red & Blue (từ cache RAM hoặc truy vấn DB)
+      let challenger = dbPlayers.get(job.redId) || await db.getPlayerById(job.redId);
+      let opponent = dbPlayers.get(job.blueId) || await db.getPlayerById(job.blueId);
 
-  // 2. Cắt ra tối đa BATCH_SIZE (10) đối thủ cho lượt chạy này
-  const currentOpponentsIds = currentJob.remainingOpponents.splice(0, BATCH_SIZE);
-  console.log(`⚔️ [Scheduler] Đang chạy batch ${currentOpponentsIds.length} trận cho bot "${challenger.botName}" (Còn lại: ${currentJob.remainingOpponents.length} đối thủ)...`);
-
-  let matchesRunInBatch = 0;
-
-  for (const oppId of currentOpponentsIds) {
-    const opponent = dbPlayers.get(oppId);
-    if (!opponent) continue;
-
-    // Luân phiên màu cờ RED / BLUE để đảm bảo công bằng tuyệt đối
-    const isChallengerRed = (currentJob.matchCounter % 2 === 0);
-    currentJob.matchCounter++;
-
-    const botRedConfig = isChallengerRed
-      ? {
-          id: challenger.botId,
-          name: challenger.botName,
-          author: challenger.author,
-          language: challenger.language,
-          code: { code: challenger.botCode, language: challenger.language }
-        }
-      : {
-          id: opponent.botId,
-          name: opponent.botName,
-          author: opponent.author,
-          language: opponent.language,
-          code: { code: opponent.botCode, language: opponent.language }
-        };
-
-    const botBlueConfig = isChallengerRed
-      ? {
-          id: opponent.botId,
-          name: opponent.botName,
-          author: opponent.author,
-          language: opponent.language,
-          code: { code: opponent.botCode, language: opponent.language }
-        }
-      : {
-          id: challenger.botId,
-          name: challenger.botName,
-          author: challenger.author,
-          language: challenger.language,
-          code: { code: challenger.botCode, language: challenger.language }
-        };
-
-    // Chạy trận đấu qua playMatch
-    const matchResult = await new Promise(resolve => {
-      setImmediate(() => {
-        const res = playMatch(botRedConfig, botBlueConfig, { timeoutMs: 200 });
-        resolve(res);
-      });
-    });
-
-    matchesRunInBatch++;
-
-    // Lưu lịch sử trận đấu phục vụ Replay
-    dbMatches.set(matchResult.id, {
-      ...matchResult,
-      roomId: currentJob.roomId,
-      timestamp: Date.now()
-    });
-
-    // Cập nhật ngay điểm số, chỉ số và lastMatchId cho CẢ 2 BOT (Red & Blue)
-    const redRecord = dbPlayers.get(botRedConfig.id);
-    const blueRecord = dbPlayers.get(botBlueConfig.id);
-
-    if (redRecord) {
-      redRecord.lastMatchId = matchResult.id;
-    }
-    if (blueRecord) {
-      blueRecord.lastMatchId = matchResult.id;
-    }
-
-    if (redRecord && blueRecord) {
-      redRecord.matchesPlayed += 1;
-      blueRecord.matchesPlayed += 1;
-
-      redRecord.errors += matchResult.botRed.errors || 0;
-      blueRecord.errors += matchResult.botBlue.errors || 0;
-
-      if (matchResult.winner === 'RED') {
-        redRecord.wins += 1;
-        redRecord.score += SCORING.WIN;
-        blueRecord.losses += 1;
-        blueRecord.score += SCORING.LOSS;
-      } else if (matchResult.winner === 'BLUE') {
-        blueRecord.wins += 1;
-        blueRecord.score += SCORING.WIN;
-        redRecord.losses += 1;
-        redRecord.score += SCORING.LOSS;
-      } else {
-        redRecord.draws += 1;
-        redRecord.score += SCORING.DRAW;
-        blueRecord.draws += 1;
-        blueRecord.score += SCORING.DRAW;
+      if (!challenger || !opponent) {
+        console.warn(`⚠️ [MatchQueue] Bỏ qua trận ${job.id}: Không tìm thấy dữ liệu bot Red=${job.redId} hoặc Blue=${job.blueId}`);
+        continue;
       }
 
-      redRecord.updatedAt = Date.now();
-      blueRecord.updatedAt = Date.now();
+      // Đồng bộ lại vào RAM
+      dbPlayers.set(challenger.botId || challenger.id, challenger);
+      dbPlayers.set(opponent.botId || opponent.id, opponent);
+
+      const botRedConfig = {
+        id: challenger.botId || challenger.id,
+        name: challenger.botName || challenger.name,
+        author: challenger.author,
+        language: challenger.language,
+        code: { code: challenger.botCode, language: challenger.language }
+      };
+
+      const botBlueConfig = {
+        id: opponent.botId || opponent.id,
+        name: opponent.botName || opponent.name,
+        author: opponent.author,
+        language: opponent.language,
+        code: { code: opponent.botCode, language: opponent.language }
+      };
+
+      console.log(`⚔️ [MatchQueue] Đang đấu: "${botRedConfig.name}" (Red) vs "${botBlueConfig.name}" (Blue) [Còn lại: ${matchQueue.length} trận]`);
+
+      // Thực thi trận đấu qua tournamentEngine
+      let matchResult;
+      try {
+        matchResult = playMatch(botRedConfig, botBlueConfig, { timeoutMs: 200 });
+      } catch (err) {
+        console.error(`❌ [MatchQueue] Lỗi khi thi đấu giữa ${botRedConfig.name} và ${botBlueConfig.name}:`, err);
+        continue;
+      }
+
+      // 1. Lưu lịch sử trận đấu vào Database
+      const matchRecord = {
+        ...matchResult,
+        roomId: job.roomId,
+        tournamentId: job.tournamentId,
+        stageIndex: job.stageIndex || 1,
+        timestamp: Date.now()
+      };
+      await db.saveMatch(matchRecord);
+      dbMatches.set(matchRecord.id, matchRecord);
+
+      // 2. Cập nhật điểm số và kết quả cho cả 2 bot (Red & Blue) vào Database
+      challenger.lastMatchId = matchResult.id;
+      opponent.lastMatchId = matchResult.id;
+      challenger.matchesPlayed = (challenger.matchesPlayed || 0) + 1;
+      opponent.matchesPlayed = (opponent.matchesPlayed || 0) + 1;
+      challenger.errors = (challenger.errors || 0) + (matchResult.botRed.errors || 0);
+      opponent.errors = (opponent.errors || 0) + (matchResult.botBlue.errors || 0);
+
+      if (matchResult.winner === 'RED') {
+        challenger.wins = (challenger.wins || 0) + 1;
+        challenger.score = (challenger.score || 0) + SCORING.WIN; // 3 điểm
+        opponent.losses = (opponent.losses || 0) + 1;
+        opponent.score = (opponent.score || 0) + SCORING.LOSS; // 0 điểm
+      } else if (matchResult.winner === 'BLUE') {
+        opponent.wins = (opponent.wins || 0) + 1;
+        opponent.score = (opponent.score || 0) + SCORING.WIN; // 3 điểm
+        challenger.losses = (challenger.losses || 0) + 1;
+        challenger.score = (challenger.score || 0) + SCORING.LOSS; // 0 điểm
+      } else {
+        // HÒA (DRAW: winner === 'DRAW' hoặc null)
+        challenger.draws = (challenger.draws || 0) + 1;
+        challenger.score = (challenger.score || 0) + SCORING.DRAW; // 1 điểm
+        opponent.draws = (opponent.draws || 0) + 1;
+        opponent.score = (opponent.score || 0) + SCORING.DRAW; // 1 điểm
+      }
+
+      challenger.updatedAt = Date.now();
+      opponent.updatedAt = Date.now();
+
+      await db.savePlayer(challenger);
+      await db.savePlayer(opponent);
+
+      // 3. Nếu trận thuộc giải đấu, cập nhật stage.standings
+      if (job.tournamentId) {
+        const tour = await db.getTournamentById(job.tournamentId);
+        if (tour && Array.isArray(tour.stages)) {
+          const stage = tour.stages.find(s => s.stageIndex === (job.stageIndex || tour.currentStageIndex));
+          if (stage && Array.isArray(stage.standings)) {
+            const redSt = stage.standings.find(s => s.botId === botRedConfig.id);
+            const blueSt = stage.standings.find(s => s.botId === botBlueConfig.id);
+
+            if (redSt) {
+              redSt.matchesPlayed = (redSt.matchesPlayed || 0) + 1;
+              redSt.errors = (redSt.errors || 0) + (matchResult.botRed.errors || 0);
+              redSt.lastMatchId = matchResult.id;
+            }
+            if (blueSt) {
+              blueSt.matchesPlayed = (blueSt.matchesPlayed || 0) + 1;
+              blueSt.errors = (blueSt.errors || 0) + (matchResult.botBlue.errors || 0);
+              blueSt.lastMatchId = matchResult.id;
+            }
+
+            if (matchResult.winner === 'RED') {
+              if (redSt) { redSt.wins = (redSt.wins || 0) + 1; redSt.score = (redSt.score || 0) + SCORING.WIN; }
+              if (blueSt) { blueSt.losses = (blueSt.losses || 0) + 1; blueSt.score = (blueSt.score || 0) + SCORING.LOSS; }
+            } else if (matchResult.winner === 'BLUE') {
+              if (blueSt) { blueSt.wins = (blueSt.wins || 0) + 1; blueSt.score = (blueSt.score || 0) + SCORING.WIN; }
+              if (redSt) { redSt.losses = (redSt.losses || 0) + 1; redSt.score = (redSt.score || 0) + SCORING.LOSS; }
+            } else {
+              if (redSt) { redSt.draws = (redSt.draws || 0) + 1; redSt.score = (redSt.score || 0) + SCORING.DRAW; }
+              if (blueSt) { blueSt.draws = (blueSt.draws || 0) + 1; blueSt.score = (blueSt.score || 0) + SCORING.DRAW; }
+            }
+
+            stage.standings.sort((a, b) => b.score - a.score || b.wins - a.wins || a.errors - b.errors);
+            await db.saveTournament(tour);
+          }
+        }
+      }
+
+      // Giới hạn bộ nhớ dbMatches tối đa 100 trận trong RAM
+      pruneOldMatches(100);
+
+      // 4. Phát sự kiện cập nhật Bảng xếp hạng thời gian thực
+      const targetRoom = job.roomId || 'PUBLIC';
+      const liveLeaderboard = await db.getLeaderboard(targetRoom, job.tournamentId);
+      broadcastSSE('leaderboard_updated', {
+        roomId: targetRoom,
+        tournamentId: job.tournamentId || null,
+        leaderboard: liveLeaderboard,
+        queueLength: matchQueue.length,
+        isBatchRunning: matchQueue.length > 0,
+        lastMatch: {
+          id: matchResult.id,
+          botRed: botRedConfig.name,
+          botBlue: botBlueConfig.name,
+          winner: matchResult.winner
+        }
+      });
+
+      // Nhịp nghỉ ngắn 50ms giữa các trận
+      if (matchQueue.length > 0) {
+        await new Promise(resolve => setTimeout(resolve, WORKER_REST_MS || 50));
+      }
+    }
+  } catch (criticalErr) {
+    console.error('❌ [MatchQueue Worker Critical Error]:', criticalErr);
+  } finally {
+    isWorkerRunning = false;
+    if (matchQueue.length > 0) {
+      setImmediate(processMatchQueue);
+    } else {
+      console.log(`💤 [MatchQueue] Hàng đợi đã rỗng. Worker chuyển về trạng thái nghỉ (Idle 0% CPU).`);
     }
   }
-
-  // Giới hạn bộ nhớ dbMatches tối đa 300 trận (nhưng luôn giữ lại các trận là lastMatchId của mỗi bot)
-  pruneOldMatches(300);
-
-  // 3. Lưu kết quả xuống đĩa và phát sự kiện cập nhật Bảng xếp hạng
-  savePersistedData();
-  broadcastSSE('leaderboard_updated', {
-    roomId: currentJob.roomId,
-    leaderboard: getSortedLeaderboard(currentJob.roomId)
-  });
-
-  // 4. Kiểm tra xem bot hiện tại còn đối thủ chưa đấu không
-  if (currentJob.remainingOpponents.length > 0) {
-    // Đẩy về CUỐI HÀNG ĐỢI để nhường lượt cho bot tiếp theo
-    submissionQueue.push(currentJob);
-    console.log(`🔁 [Scheduler] Bot "${challenger.botName}" xong ${matchesRunInBatch} trận, còn ${currentJob.remainingOpponents.length} đối thủ -> Xếp về cuối hàng đợi.`);
-  } else {
-    console.log(`✅ [Scheduler] Bot "${challenger.botName}" đã hoàn tất toàn bộ vòng đấu! Giải phóng khỏi hàng đợi.`);
-  }
-
-  // 5. Giải phóng cờ khoá và nghỉ nhịp ngắn (50-100ms) trước khi xử lý lượt tiếp theo
-  isWorkerRunning = false;
-
-  if (submissionQueue.length > 0) {
-    setTimeout(processQueue, WORKER_REST_MS);
-  } else {
-    console.log(`💤 [Scheduler] Hàng đợi đã rỗng. Server về trạng thái nghỉ (Idle 0% CPU).`);
-  }
 }
+
+// Alias tương thích
+const processQueue = processMatchQueue;
 
 // ============================================================================
 // 3. AUTHENTICATION & TOURNAMENT MANAGEMENT ENDPOINTS
@@ -733,7 +794,7 @@ async function processQueue() {
  * POST /api/auth/register
  * Đăng ký tài khoản người chơi mới (mặc định role 'user')
  */
-app.post('/api/auth/register', (req, res) => {
+app.post('/api/auth/register', async (req, res) => {
   try {
     const { username, password } = req.body;
     if (!username || typeof username !== 'string' || username.trim().length < 3) {
@@ -762,8 +823,7 @@ app.post('/api/auth/register', (req, res) => {
       createdAt: Date.now()
     };
 
-    dbUsers.set(userId, newUser);
-    saveUsers();
+    await db.saveUser(newUser);
 
     // Tạo token phiên đăng nhập (hạn 7 ngày)
     const token = crypto.randomBytes(32).toString('hex');
@@ -898,73 +958,654 @@ app.get('/api/tournament/status', (req, res) => {
 });
 
 // ============================================================================
-// ADMIN TOURNAMENT MANAGEMENT ENDPOINTS
+// HỆ THỐNG ĐIỀU PHỐI GIẢI ĐẤU ĐA VÒNG (MULTI-STAGE EXECUTION ENGINE)
+// ============================================================================
+
+let isTournamentRunning = false;
+
+/**
+ * Worker chạy Round-Robin cho 1 vòng đấu cụ thể của giải đấu
+ */
+async function runTournamentStage(tourId, targetStageIndex = null) {
+  const tour = dbTournaments.get(tourId);
+  if (!tour) throw new Error('Không tìm thấy giải đấu.');
+
+  const stageIdx = targetStageIndex || tour.currentStageIndex;
+  const stage = tour.stages.find(s => s.stageIndex === stageIdx);
+  if (!stage) throw new Error(`Không tìm thấy vòng đấu số ${stageIdx}.`);
+
+  // Nếu là Vòng 1 và danh sách bot tham gia đang trống, gom toàn bộ bot hợp lệ
+  if (stage.stageIndex === 1 && (!stage.participatingBots || stage.participatingBots.length === 0)) {
+    const eligible = Array.from(dbPlayers.values()).filter(p => {
+      if (tour.type === 'PRIVATE') return p.roomId === tour.id;
+      return !p.tournamentId || p.tournamentId === tour.id;
+    });
+    stage.participatingBots = eligible.map(b => b.botId);
+    stage.standings = eligible.map(b => ({
+      botId: b.botId,
+      name: b.botName || b.name,
+      author: b.author,
+      score: 0,
+      wins: 0,
+      draws: 0,
+      losses: 0,
+      errors: 0,
+      matchesPlayed: 0,
+      lastMatchId: null
+    }));
+  }
+
+  if (!stage.participatingBots || stage.participatingBots.length < 2) {
+    throw new Error(`Cần tối thiểu 2 bot trong ${stage.name} để tiến hành thi đấu.`);
+  }
+
+  // Khởi tạo bảng điểm cho vòng nếu chưa có
+  if (!stage.standings || stage.standings.length === 0) {
+    stage.standings = stage.participatingBots.map(bId => {
+      const p = dbPlayers.get(bId);
+      return {
+        botId: bId,
+        name: p ? (p.botName || p.name) : bId,
+        author: p ? p.author : 'Anonymous',
+        score: 0,
+        wins: 0,
+        draws: 0,
+        losses: 0,
+        errors: 0,
+        matchesPlayed: 0,
+        lastMatchId: null
+      };
+    });
+  } else {
+    // Reset điểm vòng này về 0 khi bắt đầu chạy
+    for (const st of stage.standings) {
+      st.score = 0;
+      st.wins = 0;
+      st.draws = 0;
+      st.losses = 0;
+      st.errors = 0;
+      st.matchesPlayed = 0;
+    }
+  }
+
+  // Tạo danh sách cặp đấu Round-Robin 1 lượt duy nhất (C_n^2 = n * (n - 1) / 2)
+  const botIds = stage.participatingBots;
+  const matchPairs = [];
+  for (let i = 0; i < botIds.length; i++) {
+    for (let j = i + 1; j < botIds.length; j++) {
+      const bA = dbPlayers.get(botIds[i]);
+      const bB = dbPlayers.get(botIds[j]);
+      if (bA && bB) {
+        if ((i + j) % 2 === 0) {
+          matchPairs.push({ red: bA, blue: bB });
+        } else {
+          matchPairs.push({ red: bB, blue: bA });
+        }
+      }
+    }
+  }
+
+  const totalMatches = matchPairs.length;
+  const totalBatches = Math.ceil(totalMatches / BATCH_SIZE);
+
+  tour.status = 'RUNNING';
+  stage.status = 'RUNNING';
+  tour.progress = {
+    isRunning: true,
+    totalMatches,
+    completedMatches: 0,
+    currentBatch: 0,
+    totalBatches,
+    percentage: 0,
+    statusText: `Khởi động ${stage.name}: ${botIds.length} bot (${totalMatches} trận chia làm ${totalBatches} batches)...`,
+    tournamentId: tour.id,
+    stageIndex: stage.stageIndex
+  };
+
+  saveTournaments();
+  broadcastSSE('tournament_started', { tournamentId: tour.id, progress: tour.progress });
+
+  // Chạy background worker
+  (async () => {
+    isTournamentRunning = true;
+    let completedCount = 0;
+    let batchIndex = 0;
+
+    while (matchPairs.length > 0) {
+      batchIndex++;
+      const currentBatch = matchPairs.splice(0, BATCH_SIZE);
+
+      tour.progress.currentBatch = batchIndex;
+      tour.progress.statusText = `Đang chạy ${stage.name} - Batch ${batchIndex}/${totalBatches} (${currentBatch.length} trận)...`;
+      broadcastSSE('tournament_progress', { tournamentId: tour.id, progress: tour.progress });
+
+      for (const pair of currentBatch) {
+        const botRedConfig = {
+          id: pair.red.botId,
+          name: pair.red.botName || pair.red.name,
+          author: pair.red.author,
+          language: pair.red.language,
+          code: { code: pair.red.botCode, language: pair.red.language }
+        };
+        const botBlueConfig = {
+          id: pair.blue.botId,
+          name: pair.blue.botName || pair.blue.name,
+          author: pair.blue.author,
+          language: pair.blue.language,
+          code: { code: pair.blue.botCode, language: pair.blue.language }
+        };
+
+        const matchResult = await new Promise(resolve => {
+          setImmediate(() => {
+            const res = playMatch(botRedConfig, botBlueConfig, { timeoutMs: 200 });
+            resolve(res);
+          });
+        });
+
+        completedCount++;
+
+        // Lưu log trận đấu kèm tournamentId và stageIndex qua db
+        const savedMatch = {
+          ...matchResult,
+          tournamentId: tour.id,
+          stageIndex: stage.stageIndex,
+          roomId: tour.id,
+          timestamp: Date.now()
+        };
+        await db.saveMatch(savedMatch);
+
+        // Cập nhật bảng điểm vòng đấu (stage.standings)
+        const redStanding = stage.standings.find(s => s.botId === pair.red.botId);
+        const blueStanding = stage.standings.find(s => s.botId === pair.blue.botId);
+
+        if (redStanding) {
+          redStanding.matchesPlayed = (redStanding.matchesPlayed || 0) + 1;
+          redStanding.errors = (redStanding.errors || 0) + (matchResult.botRed.errors || 0);
+          redStanding.lastMatchId = matchResult.id;
+        }
+        if (blueStanding) {
+          blueStanding.matchesPlayed = (blueStanding.matchesPlayed || 0) + 1;
+          blueStanding.errors = (blueStanding.errors || 0) + (matchResult.botBlue.errors || 0);
+          blueStanding.lastMatchId = matchResult.id;
+        }
+
+        if (matchResult.winner === 'RED') {
+          if (redStanding) { redStanding.wins += 1; redStanding.score += SCORING.WIN; }
+          if (blueStanding) { blueStanding.losses += 1; blueStanding.score += SCORING.LOSS; }
+        } else if (matchResult.winner === 'BLUE') {
+          if (blueStanding) { blueStanding.wins += 1; blueStanding.score += SCORING.WIN; }
+          if (redStanding) { redStanding.losses += 1; redStanding.score += SCORING.LOSS; }
+        } else {
+          // DRAW (Hòa)
+          if (redStanding) { redStanding.draws += 1; redStanding.score += SCORING.DRAW; }
+          if (blueStanding) { blueStanding.draws += 1; blueStanding.score += SCORING.DRAW; }
+        }
+
+        // Cập nhật điểm số và lastMatchId cho player record chính (dbPlayers)
+        const pRed = dbPlayers.get(pair.red.botId);
+        const pBlue = dbPlayers.get(pair.blue.botId);
+        if (pRed && pBlue) {
+          pRed.lastMatchId = matchResult.id;
+          pBlue.lastMatchId = matchResult.id;
+          pRed.matchesPlayed = (pRed.matchesPlayed || 0) + 1;
+          pBlue.matchesPlayed = (pBlue.matchesPlayed || 0) + 1;
+          pRed.errors = (pRed.errors || 0) + (matchResult.botRed.errors || 0);
+          pBlue.errors = (pBlue.errors || 0) + (matchResult.botBlue.errors || 0);
+
+          if (matchResult.winner === 'RED') {
+            pRed.wins = (pRed.wins || 0) + 1;
+            pRed.score = (pRed.score || 0) + SCORING.WIN;
+            pBlue.losses = (pBlue.losses || 0) + 1;
+            pBlue.score = (pBlue.score || 0) + SCORING.LOSS;
+          } else if (matchResult.winner === 'BLUE') {
+            pBlue.wins = (pBlue.wins || 0) + 1;
+            pBlue.score = (pBlue.score || 0) + SCORING.WIN;
+            pRed.losses = (pRed.losses || 0) + 1;
+            pRed.score = (pRed.score || 0) + SCORING.LOSS;
+          } else {
+            // DRAW (Hòa)
+            pRed.draws = (pRed.draws || 0) + 1;
+            pRed.score = (pRed.score || 0) + SCORING.DRAW;
+            pBlue.draws = (pBlue.draws || 0) + 1;
+            pBlue.score = (pBlue.score || 0) + SCORING.DRAW;
+          }
+          await db.savePlayer(pRed);
+          await db.savePlayer(pBlue);
+        }
+      }
+
+      tour.progress.completedMatches = completedCount;
+      tour.progress.percentage = Math.round((completedCount / totalMatches) * 100);
+
+      // Sắp xếp thứ hạng trong vòng sau mỗi batch
+      stage.standings.sort((a, b) => b.score - a.score || b.wins - a.wins || a.errors - b.errors);
+
+      await db.saveTournament(tour);
+
+      broadcastSSE('tournament_progress', { tournamentId: tour.id, progress: tour.progress });
+      broadcastSSE('leaderboard_updated', {
+        tournamentId: tour.id,
+        stageIndex: stage.stageIndex,
+        leaderboard: stage.standings
+      });
+
+      await new Promise(r => setTimeout(r, WORKER_REST_MS));
+    }
+
+    stage.status = 'COMPLETED';
+    tour.progress.isRunning = false;
+    tour.progress.completedMatches = totalMatches;
+    tour.progress.percentage = 100;
+    tour.progress.statusText = `🎉 Hoàn tất ${stage.name} (${totalMatches} trận)!`;
+
+    // Sắp xếp chung cuộc vòng
+    stage.standings.sort((a, b) => b.score - a.score || b.wins - a.wins || a.errors - b.errors);
+
+    // Nếu đã là vòng cuối cùng của giải
+    if (stage.stageIndex === tour.stagesCount) {
+      tour.status = 'COMPLETED';
+      tour.progress.statusText = `🏆 Toàn bộ giải đấu "${tour.name}" đã hoàn thành xuất sắc!`;
+    }
+
+    isTournamentRunning = false;
+    await db.saveTournament(tour);
+
+    broadcastSSE('tournament_completed', { tournamentId: tour.id, progress: tour.progress, stageIndex: stage.stageIndex });
+    broadcastSSE('tournament_updated', { tournament: tour });
+    broadcastSSE('leaderboard_updated', {
+      tournamentId: tour.id,
+      stageIndex: stage.stageIndex,
+      leaderboard: stage.standings
+    });
+
+    console.log(`🏆 [Tournament] Hoàn tất ${stage.name} của giải "${tour.name}"!`);
+  })().catch(err => {
+    console.error('[Tournament] Lỗi khi chạy giải đấu:', err);
+    isTournamentRunning = false;
+    tour.progress.isRunning = false;
+    tour.progress.statusText = `Lỗi: ${err.message}`;
+    saveTournaments();
+  });
+
+  return tour.progress;
+}
+
+// ============================================================================
+// ADMIN MULTI-STAGE TOURNAMENT ROUTES
 // ============================================================================
 
 /**
- * POST /api/admin/tournament/schedule
- * Admin thiết lập lịch trình giải đấu
+ * 1. POST /api/admin/tournaments
+ * Admin tạo giải đấu mới (hỗ trợ thiết lập 1 đến 5 vòng và Top N thăng hạng)
  */
-app.post('/api/admin/tournament/schedule', requireAdmin, (req, res) => {
+app.post('/api/admin/tournaments', requireAdmin, (req, res) => {
   try {
-    const { registrationStart, registrationEnd, tournamentStart, isOpenForRegistration, status } = req.body;
-    if (registrationStart) tournamentState.registrationStart = registrationStart;
-    if (registrationEnd) tournamentState.registrationEnd = registrationEnd;
-    if (tournamentStart) tournamentState.tournamentStart = tournamentStart;
-    if (typeof isOpenForRegistration === 'boolean') {
-      tournamentState.isOpenForRegistration = isOpenForRegistration;
+    const { name, description, registrationStart, registrationEnd, stagesCount, stages, prizes } = req.body;
+
+    if (!name || typeof name !== 'string' || !name.trim()) {
+      return res.status(400).json({ error: 'Tên giải đấu là bắt buộc và không được để trống.' });
     }
-    if (status) tournamentState.status = status;
 
-    saveTournamentConfig();
-    broadcastSSE('tournament_updated', { tournament: tournamentState });
+    const sCount = Math.max(1, Math.min(5, Number(stagesCount) || 1));
+    const parsedStages = [];
 
-    return res.status(200).json({
+    for (let i = 1; i <= sCount; i++) {
+      const inputStage = Array.isArray(stages) ? stages.find(s => Number(s.stageIndex) === i) : null;
+      let defaultStageName = `Vòng ${i}`;
+      if (sCount === 1) defaultStageName = 'Vòng Đấu Chính';
+      else if (i === 1) defaultStageName = 'Vòng 1: Vòng Bảng (Qualifier)';
+      else if (i === sCount) defaultStageName = `Vòng ${i}: Chung Kết (Finals)`;
+      else defaultStageName = `Vòng ${i}: Bán Kết / Phân Hạng`;
+
+      const defaultTopN = i === sCount ? 1 : Math.max(2, Math.floor(16 / Math.pow(2, i - 1)));
+
+      parsedStages.push({
+        stageIndex: i,
+        name: inputStage && inputStage.name ? inputStage.name.trim() : defaultStageName,
+        topNToAdvance: inputStage && inputStage.topNToAdvance ? Number(inputStage.topNToAdvance) : defaultTopN,
+        status: i === 1 ? 'REGISTRATION' : 'PENDING',
+        participatingBots: [],
+        standings: [],
+        matches: []
+      });
+    }
+
+    const newTour = {
+      id: `tour_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      name: name.trim(),
+      description: (description || '').trim(),
+      type: 'GLOBAL',
+      createdBy: req.user ? req.user.username : 'admin',
+      createdAt: Date.now(),
+      isOpenForRegistration: true,
+      registrationStart: registrationStart || new Date().toISOString(),
+      registrationEnd: registrationEnd || new Date(Date.now() + 3600 * 1000 * 24 * 7).toISOString(),
+      status: 'REGISTRATION',
+      stagesCount: sCount,
+      currentStageIndex: 1,
+      stages: parsedStages,
+      prizes: Array.isArray(prizes) && prizes.length > 0 ? prizes : [
+        { id: 'prize_1', rank: 1, title: 'Hạng 1 (Quán Quân)', reward: 'Cúp Vàng + 500.000 VNĐ', badge: '🥇' },
+        { id: 'prize_2', rank: 2, title: 'Hạng 2 (Á Quân)', reward: 'Cúp Bạc + 300.000 VNĐ', badge: '🥈' },
+        { id: 'prize_3', rank: 3, title: 'Hạng 3 (Quý Quân)', reward: 'Huy Chương Đồng + 100.000 VNĐ', badge: '🥉' }
+      ],
+      isPrizeAnnounced: false,
+      progress: {
+        isRunning: false,
+        totalMatches: 0,
+        completedMatches: 0,
+        currentBatch: 0,
+        totalBatches: 0,
+        percentage: 0,
+        statusText: 'Sẵn sàng'
+      }
+    };
+
+    dbTournaments.set(newTour.id, newTour);
+    saveTournaments();
+    broadcastSSE('tournament_updated', { tournament: newTour });
+
+    console.log(`[Admin] 🏆 Đã tạo giải đấu mới: "${newTour.name}" (${sCount} vòng)`);
+    return res.status(201).json({
       success: true,
-      message: 'Đã lưu cấu hình lịch trình giải đấu!',
-      data: tournamentState
+      message: `Đã tạo giải đấu "${newTour.name}" thành công với ${sCount} vòng đấu!`,
+      tournament: newTour
     });
   } catch (err) {
-    console.error('Error in /api/admin/tournament/schedule:', err);
-    return res.status(500).json({ error: 'Lỗi server khi lưu lịch trình.' });
+    console.error('Error in POST /api/admin/tournaments:', err);
+    return res.status(500).json({ error: 'Lỗi server khi tạo giải đấu mới.' });
   }
 });
 
 /**
- * POST /api/admin/tournament/toggle-registration
- * Admin toggle thủ công mở / khóa cổng nộp bot
+ * 2. GET /api/admin/tournaments/all
+ * Admin lấy danh sách toàn bộ giải đấu (cả Global Arenas lẫn Private Rooms)
  */
-app.post('/api/admin/tournament/toggle-registration', requireAdmin, (req, res) => {
+app.get('/api/admin/tournaments/all', requireAdmin, (req, res) => {
   try {
-    tournamentState.isOpenForRegistration = !tournamentState.isOpenForRegistration;
-    saveTournamentConfig();
-    broadcastSSE('tournament_updated', { tournament: tournamentState });
+    const list = Array.from(dbTournaments.values())
+      .map(t => {
+        const curStage = t.stages.find(s => s.stageIndex === t.currentStageIndex) || t.stages[0] || {};
+        const botsCount = (t.stages[0]?.participatingBots?.length) ||
+          Array.from(dbPlayers.values()).filter(p => p.tournamentId === t.id || (t.type === 'PRIVATE' && p.roomId === t.id)).length;
+        const matchesCount = Array.from(dbMatches.values()).filter(m => m.tournamentId === t.id || (t.type === 'PRIVATE' && m.roomId === t.id)).length;
 
-    const statusMsg = tournamentState.isOpenForRegistration ? 'ĐÃ MỞ' : 'ĐÃ KHÓA';
-    console.log(`[Admin] 📢 Admin đã thay đổi cổng nộp bot: ${statusMsg}`);
+        return {
+          id: t.id,
+          name: t.name,
+          description: t.description,
+          type: t.type || 'GLOBAL',
+          createdBy: t.createdBy,
+          createdAt: t.createdAt,
+          status: t.status,
+          stagesCount: t.stagesCount,
+          currentStageIndex: t.currentStageIndex,
+          currentStageName: curStage.name || `Vòng ${t.currentStageIndex}`,
+          isOpenForRegistration: t.isOpenForRegistration,
+          registrationStart: t.registrationStart,
+          registrationEnd: t.registrationEnd,
+          prizes: t.prizes,
+          isPrizeAnnounced: t.isPrizeAnnounced,
+          botsCount,
+          matchesCount,
+          stages: t.stages,
+          progress: t.progress
+        };
+      })
+      .sort((a, b) => b.createdAt - a.createdAt);
+
     return res.status(200).json({
       success: true,
-      isOpenForRegistration: tournamentState.isOpenForRegistration,
-      message: `Cổng nộp bot hiện ${statusMsg}.`
+      totalTournaments: list.length,
+      tournaments: list
     });
   } catch (err) {
-    console.error('Error in /api/admin/tournament/toggle-registration:', err);
-    return res.status(500).json({ error: 'Lỗi server khi chuyển trạng thái đăng ký.' });
+    console.error('Error in GET /api/admin/tournaments/all:', err);
+    return res.status(500).json({ error: 'Lỗi server khi tải danh sách giải đấu.' });
   }
 });
 
 /**
- * POST /api/admin/tournament/prizes
- * Admin lưu danh sách cơ cấu giải thưởng
+ * 3. POST /api/admin/tournaments/:id/start-stage
+ * Admin bắt đầu chạy các trận đấu của vòng hiện tại
  */
-app.post('/api/admin/tournament/prizes', requireAdmin, (req, res) => {
+app.post('/api/admin/tournaments/:id/start-stage', requireAdmin, async (req, res) => {
   try {
+    const { id } = req.params;
+    const tour = dbTournaments.get(id);
+    if (!tour) return res.status(404).json({ error: 'Không tìm thấy giải đấu.' });
+
+    if (isTournamentRunning || (tour.progress && tour.progress.isRunning)) {
+      return res.status(400).json({ error: 'Một vòng đấu đang trong quá trình chạy, vui lòng chờ hoàn tất!' });
+    }
+
+    const stageIdx = req.body.stageIndex || tour.currentStageIndex;
+    const progress = await runTournamentStage(tour.id, stageIdx);
+
+    return res.status(200).json({
+      success: true,
+      message: `Đã kích hoạt thi đấu Vòng ${stageIdx} của giải "${tour.name}"!`,
+      progress
+    });
+  } catch (err) {
+    console.error('Error in /api/admin/tournaments/:id/start-stage:', err);
+    return res.status(400).json({ error: err.message || 'Lỗi khi khởi chạy vòng đấu.' });
+  }
+});
+
+/**
+ * 4. POST /api/admin/tournaments/:id/advance-stage
+ * Chốt điểm vòng hiện tại, tự động lọc ra Top N bot đủ điều kiện để nạp vào danh sách thi đấu của vòng tiếp theo
+ */
+app.post('/api/admin/tournaments/:id/advance-stage', requireAdmin, (req, res) => {
+  try {
+    const { id } = req.params;
+    const tour = dbTournaments.get(id);
+    if (!tour) return res.status(404).json({ error: 'Không tìm thấy giải đấu.' });
+
+    if (tour.currentStageIndex >= tour.stagesCount) {
+      return res.status(400).json({
+        error: `Giải đấu đã ở vòng cuối cùng (Vòng ${tour.stagesCount}). Hãy bấm "Kết Thúc & Trao Giải" để hoàn tất!`
+      });
+    }
+
+    const currentStage = tour.stages.find(s => s.stageIndex === tour.currentStageIndex);
+    if (!currentStage) return res.status(400).json({ error: 'Không tìm thấy dữ liệu vòng hiện tại.' });
+
+    // Đảm bảo standings đã được sắp xếp
+    if (!currentStage.standings || currentStage.standings.length === 0) {
+      return res.status(400).json({
+        error: `Vòng ${currentStage.stageIndex} (${currentStage.name}) chưa có kết quả thi đấu để chốt điểm!`
+      });
+    }
+
+    currentStage.standings.sort((a, b) => b.score - a.score || b.wins - a.wins || a.errors - b.errors);
+
+    const topN = Math.max(1, currentStage.topNToAdvance || Math.floor(currentStage.standings.length / 2));
+    const qualifiedBots = currentStage.standings.slice(0, topN);
+
+    if (qualifiedBots.length < 2 && currentStage.stageIndex + 1 < tour.stagesCount) {
+      return res.status(400).json({
+        error: `Cần tối thiểu 2 bot thăng hạng vào vòng tiếp theo (hiện chỉ có ${qualifiedBots.length} bot).`
+      });
+    }
+
+    // Đánh dấu vòng cũ hoàn tất
+    currentStage.status = 'COMPLETED';
+
+    // Thăng hạng sang vòng tiếp theo
+    tour.currentStageIndex += 1;
+    const nextStage = tour.stages.find(s => s.stageIndex === tour.currentStageIndex);
+    nextStage.participatingBots = qualifiedBots.map(b => b.botId);
+    nextStage.standings = qualifiedBots.map(b => ({
+      botId: b.botId,
+      name: b.name,
+      author: b.author,
+      score: 0,
+      wins: 0,
+      draws: 0,
+      losses: 0,
+      errors: 0,
+      matchesPlayed: 0,
+      lastMatchId: null
+    }));
+    nextStage.status = 'PENDING';
+
+    tour.status = 'RUNNING';
+
+    saveTournaments();
+    broadcastSSE('tournament_updated', { tournament: tour });
+    broadcastSSE('leaderboard_updated', {
+      tournamentId: tour.id,
+      stageIndex: nextStage.stageIndex,
+      leaderboard: nextStage.standings
+    });
+
+    console.log(`[Tournament] ⚖️ Đã chốt Vòng ${currentStage.stageIndex} và nạp ${qualifiedBots.length} bot vào ${nextStage.name}!`);
+    return res.status(200).json({
+      success: true,
+      message: `Đã chốt Vòng ${currentStage.stageIndex} và thăng hạng Top ${qualifiedBots.length} bot vào ${nextStage.name}!`,
+      currentStageIndex: tour.currentStageIndex,
+      advancedBots: qualifiedBots,
+      nextStage
+    });
+  } catch (err) {
+    console.error('Error in /api/admin/tournaments/:id/advance-stage:', err);
+    return res.status(500).json({ error: 'Lỗi server khi chuyển vòng giải đấu.' });
+  }
+});
+
+/**
+ * 5. POST /api/admin/tournaments/:id/finish
+ * Kết thúc giải đấu và công bố trao thưởng
+ */
+app.post('/api/admin/tournaments/:id/finish', requireAdmin, (req, res) => {
+  try {
+    const { id } = req.params;
+    const tour = dbTournaments.get(id);
+    if (!tour) return res.status(404).json({ error: 'Không tìm thấy giải đấu.' });
+
+    tour.status = 'COMPLETED';
+    tour.isPrizeAnnounced = true;
+    if (tour.progress) {
+      tour.progress.isRunning = false;
+      tour.progress.statusText = `🏆 Giải đấu "${tour.name}" đã chính thức kết thúc & hoàn tất trao thưởng!`;
+    }
+
+    saveTournaments();
+    broadcastSSE('tournament_updated', { tournament: tour });
+    broadcastSSE('leaderboard_updated', { tournamentId: tour.id });
+
+    return res.status(200).json({
+      success: true,
+      message: `Đã hoàn tất và công bố giải thưởng cho giải đấu "${tour.name}"!`,
+      tournament: tour
+    });
+  } catch (err) {
+    console.error('Error in /api/admin/tournaments/:id/finish:', err);
+    return res.status(500).json({ error: 'Lỗi server khi kết thúc giải đấu.' });
+  }
+});
+
+/**
+ * 6. POST /api/admin/tournaments/:id/toggle-pause
+ * Tạm dừng hoặc Tiếp tục giải đấu / phòng riêng
+ */
+app.post('/api/admin/tournaments/:id/toggle-pause', requireAdmin, (req, res) => {
+  try {
+    const { id } = req.params;
+    const tour = dbTournaments.get(id);
+    if (!tour) return res.status(404).json({ error: 'Không tìm thấy giải đấu.' });
+
+    if (tour.status === 'PAUSED') {
+      tour.status = tour.isOpenForRegistration ? 'REGISTRATION' : 'RUNNING';
+    } else {
+      tour.status = 'PAUSED';
+    }
+
+    saveTournaments();
+    broadcastSSE('tournament_updated', { tournament: tour });
+
+    return res.status(200).json({
+      success: true,
+      status: tour.status,
+      message: `Trạng thái giải đấu hiện là: ${tour.status}`
+    });
+  } catch (err) {
+    console.error('Error in /api/admin/tournaments/:id/toggle-pause:', err);
+    return res.status(500).json({ error: 'Lỗi server khi chuyển trạng thái tạm dừng.' });
+  }
+});
+
+/**
+ * 7. POST /api/admin/tournaments/:id/toggle-registration
+ * Đóng hoặc mở cổng đăng ký của một giải đấu
+ */
+app.post('/api/admin/tournaments/:id/toggle-registration', requireAdmin, (req, res) => {
+  try {
+    const { id } = req.params;
+    const tour = dbTournaments.get(id);
+    if (!tour) return res.status(404).json({ error: 'Không tìm thấy giải đấu.' });
+
+    tour.isOpenForRegistration = !tour.isOpenForRegistration;
+    saveTournaments();
+    broadcastSSE('tournament_updated', { tournament: tour });
+
+    const statusMsg = tour.isOpenForRegistration ? 'ĐÃ MỞ' : 'ĐÃ KHÓA';
+    return res.status(200).json({
+      success: true,
+      isOpenForRegistration: tour.isOpenForRegistration,
+      message: `Cổng nộp bot giải "${tour.name}" hiện ${statusMsg}.`
+    });
+  } catch (err) {
+    console.error('Error in /api/admin/tournaments/:id/toggle-registration:', err);
+    return res.status(500).json({ error: 'Lỗi server khi đổi trạng thái nộp bot.' });
+  }
+});
+
+/**
+ * 8. POST /api/admin/tournaments/:id/delete
+ * Xóa một giải đấu hoặc phòng riêng tư (đối với phòng lỗi/spam)
+ */
+app.post('/api/admin/tournaments/:id/delete', requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!dbTournaments.has(id)) {
+      return res.status(404).json({ error: 'Không tìm thấy giải đấu cần xóa.' });
+    }
+
+    const tour = dbTournaments.get(id);
+    dbTournaments.delete(id);
+    await db.deleteTournament(id);
+    broadcastSSE('tournament_updated', { tournamentId: id, deleted: true });
+
+    console.log(`[Admin] 🗑️ Đã xóa giải đấu / phòng: "${tour.name}" (${id})`);
+    return res.status(200).json({
+      success: true,
+      message: `Đã xóa giải đấu / phòng "${tour.name}" thành công.`
+    });
+  } catch (err) {
+    console.error('Error in /api/admin/tournaments/:id/delete:', err);
+    return res.status(500).json({ error: 'Lỗi server khi xóa giải đấu.' });
+  }
+});
+
+/**
+ * 9. POST /api/admin/tournaments/:id/prizes
+ * Cập nhật cơ cấu giải thưởng
+ */
+app.post('/api/admin/tournaments/:id/prizes', requireAdmin, (req, res) => {
+  try {
+    const { id } = req.params;
+    const tour = dbTournaments.get(id);
+    if (!tour) return res.status(404).json({ error: 'Không tìm thấy giải đấu.' });
+
     const { prizes } = req.body;
     if (!Array.isArray(prizes)) {
-      return res.status(400).json({ error: 'Danh sách giải thưởng không hợp lệ (cần dạng mảng).' });
+      return res.status(400).json({ error: 'Danh sách giải thưởng không hợp lệ.' });
     }
 
-    tournamentState.prizes = prizes.map((p, idx) => ({
+    tour.prizes = prizes.map((p, idx) => ({
       id: p.id || `prize_${Date.now()}_${idx}`,
       rank: Number(p.rank) || (idx + 1),
       title: (p.title || `Hạng ${idx + 1}`).trim(),
@@ -972,245 +1613,235 @@ app.post('/api/admin/tournament/prizes', requireAdmin, (req, res) => {
       badge: p.badge || (idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : '✨')
     }));
 
-    saveTournamentConfig();
-    broadcastSSE('tournament_updated', { tournament: tournamentState });
+    saveTournaments();
+    broadcastSSE('tournament_updated', { tournament: tour });
 
     return res.status(200).json({
       success: true,
       message: 'Đã lưu cấu hình giải thưởng thành công!',
-      prizes: tournamentState.prizes
+      prizes: tour.prizes
     });
   } catch (err) {
-    console.error('Error in /api/admin/tournament/prizes:', err);
-    return res.status(500).json({ error: 'Lỗi server khi lưu giải thưởng.' });
+    console.error('Error in /api/admin/tournaments/:id/prizes:', err);
+    return res.status(500).json({ error: 'Lỗi server khi cập nhật giải thưởng.' });
   }
 });
 
 /**
- * POST /api/admin/tournament/announce-prizes
- * Admin bật/tắt công bố giải thưởng lên Bảng xếp hạng và Trang chủ
+ * 10. POST /api/admin/tournaments/:id/announce-prizes
+ * Bật / tắt công bố giải thưởng
  */
-app.post('/api/admin/tournament/announce-prizes', requireAdmin, (req, res) => {
+app.post('/api/admin/tournaments/:id/announce-prizes', requireAdmin, (req, res) => {
   try {
+    const { id } = req.params;
+    const tour = dbTournaments.get(id);
+    if (!tour) return res.status(404).json({ error: 'Không tìm thấy giải đấu.' });
+
     const { isPrizeAnnounced } = req.body;
-    tournamentState.isPrizeAnnounced = typeof isPrizeAnnounced === 'boolean' 
-      ? isPrizeAnnounced 
-      : !tournamentState.isPrizeAnnounced;
+    tour.isPrizeAnnounced = typeof isPrizeAnnounced === 'boolean' ? isPrizeAnnounced : !tour.isPrizeAnnounced;
 
-    saveTournamentConfig();
-    broadcastSSE('tournament_updated', { tournament: tournamentState });
+    saveTournaments();
+    broadcastSSE('tournament_updated', { tournament: tour });
 
-    const msg = tournamentState.isPrizeAnnounced ? 'Đã công bố trao giải thưởng!' : 'Đã ẩn công bố giải thưởng.';
     return res.status(200).json({
       success: true,
-      isPrizeAnnounced: tournamentState.isPrizeAnnounced,
-      message: msg
+      isPrizeAnnounced: tour.isPrizeAnnounced,
+      message: tour.isPrizeAnnounced ? 'Đã công bố trao giải thưởng!' : 'Đã ẩn công bố giải thưởng.'
     });
   } catch (err) {
-    console.error('Error in /api/admin/tournament/announce-prizes:', err);
+    console.error('Error in /api/admin/tournaments/:id/announce-prizes:', err);
     return res.status(500).json({ error: 'Lỗi server khi công bố giải thưởng.' });
   }
 });
 
+// ============================================================================
+// PUBLIC TOURNAMENT ENDPOINTS
+// ============================================================================
+
 /**
- * GET /api/admin/tournament/progress
- * Admin lấy tiến độ thi đấu giải đấu
+ * GET /api/tournaments
+ * Lấy danh sách giải đấu công khai đang hoạt động (dùng cho Dropdown chọn giải ở Tab Nộp bot và BXH)
  */
-app.get('/api/admin/tournament/progress', requireAdmin, (req, res) => {
-  return res.status(200).json({
-    success: true,
-    progress: tournamentState.tournamentProgress
-  });
+app.get('/api/tournaments', (req, res) => {
+  try {
+    const list = Array.from(dbTournaments.values())
+      .filter(t => t.status !== 'DELETED')
+      .map(t => ({
+        id: t.id,
+        name: t.name,
+        description: t.description,
+        type: t.type || 'GLOBAL',
+        status: t.status,
+        stagesCount: t.stagesCount,
+        currentStageIndex: t.currentStageIndex,
+        currentStageName: (t.stages[t.currentStageIndex - 1] || {}).name || `Vòng ${t.currentStageIndex}`,
+        stages: t.stages.map(s => ({ stageIndex: s.stageIndex, name: s.name, topNToAdvance: s.topNToAdvance, status: s.status })),
+        isOpenForRegistration: t.isOpenForRegistration,
+        registrationStart: t.registrationStart,
+        registrationEnd: t.registrationEnd,
+        isRegistrationOpenNow: isTournamentRegistrationOpen(t),
+        prizes: t.prizes,
+        isPrizeAnnounced: t.isPrizeAnnounced
+      }));
+
+    return res.status(200).json({
+      success: true,
+      tournaments: list
+    });
+  } catch (err) {
+    console.error('Error in GET /api/tournaments:', err);
+    return res.status(500).json({ error: 'Lỗi server khi lấy danh sách giải đấu.' });
+  }
 });
 
 /**
- * POST /api/admin/tournament/run-all
- * Admin kích hoạt chạy toàn bộ giải đấu Round-Robin Matchmaking theo từng Batch 10 trận
+ * GET /api/tournaments/:id
+ * Lấy thông tin chi tiết một giải đấu (kèm các vòng thi và bảng điểm)
  */
-let isTournamentRunning = false;
+app.get('/api/tournaments/:id', (req, res) => {
+  try {
+    const tour = dbTournaments.get(req.params.id);
+    if (!tour) return res.status(404).json({ error: 'Không tìm thấy giải đấu.' });
+
+    return res.status(200).json({
+      success: true,
+      tournament: tour,
+      isRegistrationOpenNow: isTournamentRegistrationOpen(tour)
+    });
+  } catch (err) {
+    console.error('Error in GET /api/tournaments/:id:', err);
+    return res.status(500).json({ error: 'Lỗi server khi lấy chi tiết giải đấu.' });
+  }
+});
+
+// ============================================================================
+// LEGACY BACKWARDS-COMPATIBLE TOURNAMENT ENDPOINTS
+// ============================================================================
+
+app.get('/api/tournament/status', (req, res) => {
+  const primary = getPrimaryGlobalTournament();
+  return res.status(200).json({
+    success: true,
+    data: {
+      id: primary ? primary.id : 'tour_global_championship',
+      name: primary ? primary.name : 'RPS Arena 9x9 Championship',
+      isOpenForRegistration: primary ? primary.isOpenForRegistration : true,
+      isRegistrationOpenNow: primary ? isTournamentRegistrationOpen(primary) : true,
+      registrationStart: primary ? primary.registrationStart : null,
+      registrationEnd: primary ? primary.registrationEnd : null,
+      tournamentStart: primary ? primary.registrationEnd : null,
+      status: primary ? primary.status : 'REGISTRATION',
+      stagesCount: primary ? primary.stagesCount : 1,
+      currentStageIndex: primary ? primary.currentStageIndex : 1,
+      prizes: primary ? primary.prizes : [],
+      isPrizeAnnounced: primary ? primary.isPrizeAnnounced : true,
+      tournamentProgress: primary ? primary.progress : { isRunning: false }
+    }
+  });
+});
 
 app.post('/api/admin/tournament/run-all', requireAdmin, async (req, res) => {
   try {
-    if (isTournamentRunning || tournamentState.tournamentProgress.isRunning) {
-      return res.status(400).json({ error: 'Giải đấu đang trong quá trình chạy, vui lòng chờ hoàn tất!' });
-    }
-
-    const eligibleBots = Array.from(dbPlayers.values());
-    if (eligibleBots.length < 2) {
-      return res.status(400).json({ error: 'Cần ít nhất 2 bot trong hệ thống để tổ chức giải đấu.' });
-    }
-
-    // Reset chỉ số trận đấu để bắt đầu giải đấu chính thức công bằng
-    const resetScores = req.body.resetScores !== false;
-    if (resetScores) {
-      for (const b of dbPlayers.values()) {
-        b.score = 0;
-        b.wins = 0;
-        b.draws = 0;
-        b.losses = 0;
-        b.errors = 0;
-        b.matchesPlayed = 0;
-      }
-      savePersistedData();
-    }
-
-    // Tạo danh sách các cặp đấu vòng tròn Round-Robin (2 lượt Red/Blue đối xứng để hoàn toàn công bằng)
-    const matchPairs = [];
-    for (let i = 0; i < eligibleBots.length; i++) {
-      for (let j = i + 1; j < eligibleBots.length; j++) {
-        const botA = eligibleBots[i];
-        const botB = eligibleBots[j];
-        // Lượt 1: A là Red, B là Blue
-        matchPairs.push({ red: botA, blue: botB });
-        // Lượt 2: B là Red, A là Blue
-        matchPairs.push({ red: botB, blue: botA });
-      }
-    }
-
-    const totalMatches = matchPairs.length;
-    const totalBatches = Math.ceil(totalMatches / BATCH_SIZE);
-
-    tournamentState.status = 'RUNNING';
-    tournamentState.tournamentProgress = {
-      isRunning: true,
-      totalMatches,
-      completedMatches: 0,
-      currentBatch: 0,
-      totalBatches,
-      percentage: 0,
-      statusText: `Khởi động giải đấu với ${eligibleBots.length} bot (${totalMatches} trận chia làm ${totalBatches} batches)...`
-    };
-
-    saveTournamentConfig();
-    broadcastSSE('tournament_started', tournamentState.tournamentProgress);
-
-    // Bắt đầu chạy ngầm theo Batch 10 trận
-    isTournamentRunning = true;
-
-    // Phản hồi ngay cho Admin biết tiến trình đã khởi chạy thành công
-    res.status(200).json({
+    const primary = getPrimaryGlobalTournament();
+    if (!primary) return res.status(400).json({ error: 'Chưa có giải đấu toàn cầu nào.' });
+    const progress = await runTournamentStage(primary.id, primary.currentStageIndex);
+    return res.status(200).json({
       success: true,
-      message: `Đã kích hoạt giải đấu: ${eligibleBots.length} bot, ${totalMatches} trận đấu (${totalBatches} batches).`,
-      progress: tournamentState.tournamentProgress
+      message: `Đã kích hoạt giải đấu "${primary.name}"!`,
+      progress
     });
-
-    // Worker chạy Batch giải đấu
-    (async () => {
-      let completedCount = 0;
-      let batchIndex = 0;
-
-      while (matchPairs.length > 0) {
-        batchIndex++;
-        const currentBatch = matchPairs.splice(0, BATCH_SIZE);
-
-        tournamentState.tournamentProgress.currentBatch = batchIndex;
-        tournamentState.tournamentProgress.statusText = `Đang chạy Batch ${batchIndex}/${totalBatches} (${currentBatch.length} trận)...`;
-        broadcastSSE('tournament_progress', tournamentState.tournamentProgress);
-
-        for (const pair of currentBatch) {
-          const botRedConfig = {
-            id: pair.red.botId,
-            name: pair.red.botName,
-            author: pair.red.author,
-            language: pair.red.language,
-            code: { code: pair.red.botCode, language: pair.red.language }
-          };
-          const botBlueConfig = {
-            id: pair.blue.botId,
-            name: pair.blue.botName,
-            author: pair.blue.author,
-            language: pair.blue.language,
-            code: { code: pair.blue.botCode, language: pair.blue.language }
-          };
-
-          const matchResult = await new Promise(resolve => {
-            setImmediate(() => {
-              const res = playMatch(botRedConfig, botBlueConfig, { timeoutMs: 200 });
-              resolve(res);
-            });
-          });
-
-          completedCount++;
-
-          dbMatches.set(matchResult.id, {
-            ...matchResult,
-            roomId: 'PUBLIC',
-            timestamp: Date.now()
-          });
-
-          const redRecord = dbPlayers.get(pair.red.botId);
-          const blueRecord = dbPlayers.get(pair.blue.botId);
-
-          if (redRecord) redRecord.lastMatchId = matchResult.id;
-          if (blueRecord) blueRecord.lastMatchId = matchResult.id;
-
-          if (redRecord && blueRecord) {
-            redRecord.matchesPlayed += 1;
-            blueRecord.matchesPlayed += 1;
-            redRecord.errors += matchResult.botRed.errors || 0;
-            blueRecord.errors += matchResult.botBlue.errors || 0;
-
-            if (matchResult.winner === 'RED') {
-              redRecord.wins += 1;
-              redRecord.score += SCORING.WIN;
-              blueRecord.losses += 1;
-              blueRecord.score += SCORING.LOSS;
-            } else if (matchResult.winner === 'BLUE') {
-              blueRecord.wins += 1;
-              blueRecord.score += SCORING.WIN;
-              redRecord.losses += 1;
-              redRecord.score += SCORING.LOSS;
-            } else {
-              redRecord.draws += 1;
-              redRecord.score += SCORING.DRAW;
-              blueRecord.draws += 1;
-              blueRecord.score += SCORING.DRAW;
-            }
-          }
-        }
-
-        tournamentState.tournamentProgress.completedMatches = completedCount;
-        tournamentState.tournamentProgress.percentage = Math.round((completedCount / totalMatches) * 100);
-
-        savePersistedData();
-        broadcastSSE('leaderboard_updated', {
-          roomId: 'PUBLIC',
-          leaderboard: getSortedLeaderboard('PUBLIC')
-        });
-        broadcastSSE('tournament_progress', tournamentState.tournamentProgress);
-
-        // Nghỉ ngắn giữa các batch để không block event loop
-        await new Promise(r => setTimeout(r, WORKER_REST_MS));
-      }
-
-      tournamentState.status = 'COMPLETED';
-      tournamentState.tournamentProgress.isRunning = false;
-      tournamentState.tournamentProgress.completedMatches = totalMatches;
-      tournamentState.tournamentProgress.percentage = 100;
-      tournamentState.tournamentProgress.statusText = `🎉 Toàn bộ giải đấu đã hoàn thành xuất sắc (${totalMatches} trận)!`;
-
-      saveTournamentConfig();
-      savePersistedData();
-      isTournamentRunning = false;
-
-      broadcastSSE('tournament_completed', tournamentState.tournamentProgress);
-      broadcastSSE('leaderboard_updated', {
-        roomId: 'PUBLIC',
-        leaderboard: getSortedLeaderboard('PUBLIC')
-      });
-      console.log(`🏆 [Tournament] Đã hoàn tất toàn bộ giải đấu (${totalMatches} trận)!`);
-    })().catch(err => {
-      console.error('[Tournament] Lỗi khi chạy giải đấu:', err);
-      isTournamentRunning = false;
-      tournamentState.tournamentProgress.isRunning = false;
-      tournamentState.tournamentProgress.statusText = `Lỗi: ${err.message}`;
-      saveTournamentConfig();
-    });
-
   } catch (err) {
-    console.error('Error in /api/admin/tournament/run-all:', err);
-    return res.status(500).json({ error: 'Lỗi server khi khởi chạy giải đấu.' });
+    return res.status(400).json({ error: err.message || 'Lỗi khi khởi chạy giải đấu.' });
   }
+});
+
+app.post('/api/admin/tournament/schedule', requireAdmin, (req, res) => {
+  const primary = getPrimaryGlobalTournament();
+  if (primary) {
+    const { registrationStart, registrationEnd, isOpenForRegistration, status } = req.body;
+    if (registrationStart) primary.registrationStart = registrationStart;
+    if (registrationEnd) primary.registrationEnd = registrationEnd;
+    if (typeof isOpenForRegistration === 'boolean') primary.isOpenForRegistration = isOpenForRegistration;
+    if (status) primary.status = status;
+    saveTournaments();
+    broadcastSSE('tournament_updated', { tournament: primary });
+  }
+  return res.status(200).json({ success: true, message: 'Đã lưu cấu hình lịch trình!' });
+});
+
+app.post('/api/admin/tournament/toggle-registration', requireAdmin, (req, res) => {
+  const primary = getPrimaryGlobalTournament();
+  if (primary) {
+    primary.isOpenForRegistration = !primary.isOpenForRegistration;
+    saveTournaments();
+    broadcastSSE('tournament_updated', { tournament: primary });
+    return res.status(200).json({
+      success: true,
+      isOpenForRegistration: primary.isOpenForRegistration,
+      message: `Cổng nộp bot hiện ${primary.isOpenForRegistration ? 'ĐÃ MỞ' : 'ĐÃ KHÓA'}.`
+    });
+  }
+  return res.status(404).json({ error: 'Không tìm thấy giải đấu.' });
+});
+
+app.post('/api/admin/tournament/prizes', requireAdmin, (req, res) => {
+  const primary = getPrimaryGlobalTournament();
+  if (primary) {
+    primary.prizes = req.body.prizes || [];
+    saveTournaments();
+    broadcastSSE('tournament_updated', { tournament: primary });
+  }
+  return res.status(200).json({ success: true, message: 'Đã lưu giải thưởng!' });
+});
+
+app.post('/api/admin/tournament/announce-prizes', requireAdmin, (req, res) => {
+  const primary = getPrimaryGlobalTournament();
+  if (primary) {
+    primary.isPrizeAnnounced = !primary.isPrizeAnnounced;
+    saveTournaments();
+    broadcastSSE('tournament_updated', { tournament: primary });
+    return res.status(200).json({ success: true, isPrizeAnnounced: primary.isPrizeAnnounced });
+  }
+  return res.status(404).json({ error: 'Không tìm thấy giải đấu.' });
+});
+
+app.get('/api/admin/auto-queue', (req, res) => {
+  return res.status(200).json({
+    success: true,
+    isAutoQueueEnabled,
+    queueLength: matchQueue.length,
+    isWorkerRunning
+  });
+});
+
+app.post('/api/admin/auto-queue', requireAdmin, (req, res) => {
+  const { enabled } = req.body || {};
+  if (typeof enabled === 'boolean') {
+    isAutoQueueEnabled = enabled;
+  } else {
+    isAutoQueueEnabled = !isAutoQueueEnabled;
+  }
+  broadcastSSE('auto_queue_updated', {
+    isAutoQueueEnabled,
+    queueLength: matchQueue.length,
+    isWorkerRunning
+  });
+  return res.status(200).json({
+    success: true,
+    isAutoQueueEnabled,
+    message: `Hàng chờ đấu tự động hiện: ${isAutoQueueEnabled ? 'BẬT (ON)' : 'TẮT (OFF)'}`
+  });
+});
+
+app.post('/api/admin/auto-queue/trigger', requireAdmin, (req, res) => {
+  const { roomId, tournamentId } = req.body || {};
+  const added = enqueueAllUnplayedMatches(roomId || 'PUBLIC', tournamentId || null);
+  return res.status(200).json({
+    success: true,
+    matchesAdded: added,
+    queueLength: matchQueue.length,
+    message: `Đã đưa ${added} trận đấu chưa đấu vào hàng chờ thi đấu!`
+  });
 });
 
 // ============================================================================
@@ -1219,80 +1850,204 @@ app.post('/api/admin/tournament/run-all', requireAdmin, async (req, res) => {
 
 /**
  * 1. POST /api/bot/submit
- * Lưu/cập nhật bot, lập danh sách đối thủ và đưa vào hàng đợi xoay vòng `submissionQueue`
+ * Lưu/cập nhật bot, ghi nhận vào giải đấu và đưa vào hàng đợi xoay vòng `submissionQueue`
  */
-app.post('/api/bot/submit', (req, res) => {
+app.post('/api/bot/submit', authenticateToken, async (req, res) => {
   try {
-    const { playerId, botId, botName, name, playerName, author, language, botCode, roomId } = req.body;
+    const currentUserId = req.user.userId || req.user.id;
+    const currentUsername = req.user.username;
 
-    if (!botCode || typeof botCode !== 'string' || botCode.trim().length === 0) {
-      return res.status(400).json({ error: 'botCode is required and cannot be empty.' });
+    if (!currentUserId || !currentUsername) {
+      return res.status(401).json({ success: false, error: 'Vui lòng đăng nhập để nộp bot!', message: 'Vui lòng đăng nhập để nộp bot!' });
     }
 
-    // Kiểm tra thời hạn đăng ký giải đấu
-    const authUser = extractUserFromReq(req);
-    const isAdmin = authUser && authUser.role === 'admin';
-    if (!isRegistrationOpenNow() && !isAdmin) {
+    const { botName, name, language, botCode, isAnonymous, roomId, tournamentId } = req.body;
+
+    if (!botCode || typeof botCode !== 'string' || botCode.trim().length === 0) {
+      return res.status(400).json({ success: false, error: 'botCode is required and cannot be empty.' });
+    }
+
+    // Xác định giải đấu mục tiêu (nếu không truyền tournamentId thì lấy primary global tournament hoặc theo roomId)
+    let targetTour = null;
+    if (tournamentId) {
+      targetTour = dbTournaments.get(tournamentId);
+    }
+    if (!targetTour && roomId && roomId !== 'PUBLIC') {
+      targetTour = dbTournaments.get(roomId);
+    }
+    if (!targetTour) {
+      targetTour = getPrimaryGlobalTournament();
+    }
+
+    // Kiểm tra thời hạn đăng ký giải đấu (Admin được quyền nộp mọi lúc để test)
+    const isAdmin = req.user.role === 'admin';
+    if (targetTour && !isTournamentRegistrationOpen(targetTour) && !isAdmin) {
       return res.status(403).json({
-        error: 'Cổng nộp bot hiện đang đóng hoặc đã hết hạn đăng ký giải đấu!',
+        success: false,
+        error: `Cổng nộp bot cho giải đấu "${targetTour.name}" hiện đang đóng hoặc đã hết hạn đăng ký!`,
         details: {
-          isOpenForRegistration: tournamentState.isOpenForRegistration,
-          registrationStart: tournamentState.registrationStart,
-          registrationEnd: tournamentState.registrationEnd
+          tournamentName: targetTour.name,
+          isOpenForRegistration: targetTour.isOpenForRegistration,
+          registrationStart: targetTour.registrationStart,
+          registrationEnd: targetTour.registrationEnd
         }
       });
     }
 
-    const assignedId = (botId || playerId || (authUser ? `player_${authUser.userId}` : `player_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`)).trim();
-    const assignedBotName = (botName || name || playerName || 'AlphaBot').trim();
-    const assignedAuthor = (author || playerName || (authUser ? authUser.username : 'Anonymous')).trim();
+    const targetTournamentId = targetTour ? targetTour.id : 'tour_global_championship';
+    const targetRoomId = (roomId || (targetTour ? targetTour.id : 'PUBLIC')).trim().toUpperCase();
+    const assignedBotName = (botName || name || 'CyberWarrior').trim();
     const assignedLanguage = (language || 'javascript').toLowerCase();
-    const targetRoomId = (roomId || 'PUBLIC').trim().toUpperCase();
 
-    // Lưu hoặc cập nhật thông tin bot vào dbPlayers
-    const existing = dbPlayers.get(assignedId);
+    // Chuẩn hóa tên tác giả theo Chế độ Ẩn danh (Anonymous Mode)
+    const isAnon = (isAnonymous === true || isAnonymous === 'true');
+    const assignedAuthor = isAnon ? 'Ẩn danh' : currentUsername;
+
+    // 1. Kiểm tra bot đã tồn tại của user trong phòng / giải đấu này chưa (DUY NHẤT theo user_id)
+    let existingBot = await db.getPlayerByUserIdAndTournament({
+      userId: currentUserId,
+      tournamentId: targetTournamentId,
+      roomId: targetRoomId
+    });
+
+    const isUpdate = !!existingBot;
+    let assignedId;
+
+    if (isUpdate) {
+      assignedId = existingBot.id || existingBot.botId;
+      console.log(`🔄 [Submit] Phát hiện bot đã tồn tại của user "${currentUsername}" (ID: ${assignedId}). Thực hiện CẬP NHẬT (Update in-place).`);
+
+      // Hủy các trận đang nằm chờ trong queue liên quan đến bot này nếu có
+      for (let i = matchQueue.length - 1; i >= 0; i--) {
+        if (matchQueue[i].redId === assignedId || matchQueue[i].blueId === assignedId) {
+          matchQueue.splice(i, 1);
+        }
+      }
+
+      // Xóa lịch sử đối đầu cũ của bot này để thi đấu lại vòng tròn từ đầu với thuật toán mới
+      await db.resetPlayerMatchHistory(assignedId, targetTournamentId, targetRoomId);
+    } else {
+      assignedId = `player_${currentUserId}`;
+      console.log(`🆕 [Submit] Đăng ký bot mới cho user "${currentUsername}" (ID: ${assignedId}). Thực hiện TẠO MỚI (Insert).`);
+    }
+
+    // Chuẩn hóa và lưu record vào Database (Bảo toàn userId)
     const record = normalizePlayerRecord({
       id: assignedId,
       botId: assignedId,
       playerId: assignedId,
+      userId: currentUserId,
       name: assignedBotName,
       botName: assignedBotName,
       playerName: assignedBotName,
       author: assignedAuthor,
       language: assignedLanguage,
       botCode: botCode.trim(),
-      score: existing ? existing.score : 0,
-      wins: existing ? existing.wins : 0,
-      draws: existing ? existing.draws : 0,
-      losses: existing ? existing.losses : 0,
-      errors: existing ? existing.errors : 0,
-      matchesPlayed: existing ? existing.matchesPlayed : 0,
-      lastMatchId: existing ? existing.lastMatchId : null,
+      score: 0,
+      wins: 0,
+      draws: 0,
+      losses: 0,
+      errors: 0,
+      matchesPlayed: 0,
+      lastMatchId: null,
       roomId: targetRoomId,
+      tournamentId: targetTournamentId,
       updatedAt: Date.now()
     });
 
+    if (isUpdate) {
+      await db.updatePlayer(assignedId, record);
+    } else {
+      await db.createPlayer(record);
+    }
+
     dbPlayers.set(assignedId, record);
-    savePersistedData();
 
-    // Đưa vào hàng đợi xoay vòng và kích hoạt Worker
-    enqueueBotForRoundRobin(assignedId, targetRoomId);
+    // Nếu là cập nhật, tính toán lại chỉ số của các đối thủ khác sau khi đã xóa các ván đấu cũ với bot này
+    if (isUpdate) {
+      await recalculateStats(targetRoomId, targetTournamentId);
+    }
 
-    const queuePos = submissionQueue.findIndex(j => j.botId === assignedId) + 1 || 1;
+    // Ghi danh vào Vòng 1 của giải đấu nếu chưa có hoặc cập nhật tên/tác giả trong bảng xếp hạng giải đấu
+    if (targetTour && targetTour.stages && targetTour.stages[0]) {
+      const stage1 = targetTour.stages[0];
+      if (!Array.isArray(stage1.participatingBots)) stage1.participatingBots = [];
+      if (!Array.isArray(stage1.standings)) stage1.standings = [];
+
+      const existingStanding = stage1.standings.find(s => s.botId === assignedId);
+      if (existingStanding) {
+        existingStanding.name = assignedBotName;
+        existingStanding.author = assignedAuthor;
+        if (isUpdate) {
+          existingStanding.score = 0;
+          existingStanding.wins = 0;
+          existingStanding.draws = 0;
+          existingStanding.losses = 0;
+          existingStanding.errors = 0;
+          existingStanding.matchesPlayed = 0;
+          existingStanding.lastMatchId = null;
+        }
+      } else {
+        if (!stage1.participatingBots.includes(assignedId)) {
+          stage1.participatingBots.push(assignedId);
+        }
+        stage1.standings.push({
+          botId: assignedId,
+          name: assignedBotName,
+          author: assignedAuthor,
+          score: 0,
+          wins: 0,
+          draws: 0,
+          losses: 0,
+          errors: 0,
+          matchesPlayed: 0,
+          lastMatchId: null
+        });
+      }
+
+      await db.saveTournament(targetTour);
+      broadcastSSE('tournament_updated', { tournament: targetTour });
+    }
+
+    // Đưa vào hàng đợi thi đấu tự động nếu tính năng Auto-Queue đang bật
+    let matchesQueued = 0;
+    if (isAutoQueueEnabled) {
+      matchesQueued = await enqueueBotUnplayedMatches(assignedId, targetRoomId, targetTournamentId);
+    } else {
+      console.log(`ℹ️ [Submit] Auto-Queue đang TẮT. Bot "${assignedBotName}" được lưu mà không đưa vào hàng chờ.`);
+    }
+
+    const queuePos = matchQueue.length;
+    const baseMessage = isUpdate ? 'Cập nhật code bot thành công!' : 'Nộp bot thành công!';
+    const userMessage = isAutoQueueEnabled
+      ? (matchesQueued > 0 ? `${baseMessage} Đã đưa ${matchesQueued} trận vào hàng chờ thi đấu!` : `${baseMessage} (Đã hoàn tất mọi trận đấu)!`)
+      : `${baseMessage} (Hàng chờ tự động đang tắt)!`;
+
+    broadcastSSE('leaderboard_updated', {
+      roomId: targetRoomId,
+      tournamentId: targetTournamentId,
+      leaderboard: getSortedLeaderboard(targetRoomId)
+    });
 
     return res.status(200).json({
       success: true,
-      message: 'Đã vào hàng đợi',
+      isUpdate,
+      message: userMessage,
       queuePosition: queuePos,
+      matchesQueued,
+      isAutoQueueEnabled,
       data: {
         id: assignedId,
         botId: assignedId,
-        playerId: assignedId,
+        userId: currentUserId,
         name: assignedBotName,
         botName: assignedBotName,
         author: assignedAuthor,
+        isAnonymous: isAnon,
         language: assignedLanguage,
         roomId: targetRoomId,
+        tournamentId: targetTournamentId,
+        tournamentName: targetTour ? targetTour.name : null,
         currentScore: record.score,
         lastMatchId: record.lastMatchId,
         queuePosition: queuePos
@@ -1305,43 +2060,98 @@ app.post('/api/bot/submit', (req, res) => {
 });
 
 /**
- * 2. GET /api/leaderboard?roomId=...
- * Trả về bảng xếp hạng đã chuẩn hóa đầy đủ cả `name` lẫn `botName`, `id` lẫn `botId` và `lastMatchId`
+ * 2. GET /api/leaderboard?roomId=...&tournamentId=...&stageIndex=...
+ * Trả về bảng xếp hạng theo giải đấu và vòng đấu cụ thể, hoặc theo phòng (SSOT trực tiếp từ Database)
  */
-app.get('/api/leaderboard', (req, res) => {
+app.get('/api/leaderboard', async (req, res) => {
   try {
+    const { tournamentId, stageIndex } = req.query;
     const roomId = (req.query.roomId || 'PUBLIC').trim().toUpperCase();
-    syncAndEnsureLastMatchIds();
-    const leaderboard = getSortedLeaderboard(roomId);
 
-    // 20 trận gần đây nhất của phòng
-    const recentMatches = Array.from(dbMatches.values())
-      .filter(m => (m.roomId || 'PUBLIC') === roomId)
-      .slice(-20)
-      .reverse()
-      .map(m => ({
-        id: m.id,
-        botRed: {
-          ...m.botRed,
-          name: m.botRed?.name || m.botRed?.botName || 'Red Bot',
-          botName: m.botRed?.botName || m.botRed?.name || 'Red Bot'
-        },
-        botBlue: {
-          ...m.botBlue,
-          name: m.botBlue?.name || m.botBlue?.botName || 'Blue Bot',
-          botName: m.botBlue?.botName || m.botBlue?.name || 'Blue Bot'
-        },
-        winner: m.winner,
-        winnerBotId: m.winnerBotId,
-        totalTurns: m.totalTurns,
-        timestamp: m.timestamp
-      }));
+    // 1. Luôn truy vấn danh sách người chơi trực tiếp từ Supabase
+    const livePlayers = await db.getPlayers(tournamentId ? { tournamentId } : (roomId !== 'PUBLIC' ? { roomId } : {}));
+    const livePlayerMap = new Map(livePlayers.map(p => [p.botId || p.id, p]));
+
+    // Nếu bảng players trong Database rỗng -> Bảng xếp hạng LUÔN LUÔN rỗng [] (Không phantom bot)
+    if (livePlayers.length === 0) {
+      const primary = getPrimaryGlobalTournament();
+      return res.status(200).json({
+        success: true,
+        roomId,
+        tournamentId: tournamentId || (primary ? primary.id : null),
+        tournamentName: primary ? primary.name : 'RPS Arena 9x9 Championship',
+        stagesCount: primary ? primary.stagesCount : 3,
+        currentStageIndex: primary ? primary.currentStageIndex : 1,
+        selectedStageIndex: stageIndex ? Number(stageIndex) : (primary ? primary.currentStageIndex : 1),
+        selectedStageName: 'Vòng 1: Vòng Bảng (Qualifier)',
+        isPrizeAnnounced: primary ? primary.isPrizeAnnounced : true,
+        prizes: primary ? primary.prizes : [],
+        isBatchRunning: isWorkerRunning,
+        queueLength: matchQueue.length,
+        leaderboard: [],
+        recentMatches: []
+      });
+    }
+
+    // 2. Trường hợp truy vấn theo Tournament & Stage
+    if (tournamentId) {
+      const tour = await db.getTournamentById(tournamentId);
+      if (tour) {
+        const stageNum = stageIndex ? Number(stageIndex) : tour.currentStageIndex;
+        const stage = (tour.stages || []).find(s => s.stageIndex === stageNum) || (tour.stages || [])[0];
+
+        let leaderboard = [];
+        if (stage && Array.isArray(stage.standings) && stage.standings.length > 0) {
+          // Lọc CHẶT CHẼ: Chỉ lấy các bot thực sự còn tồn tại trong livePlayers
+          leaderboard = stage.standings
+            .filter(st => livePlayerMap.has(st.botId))
+            .sort((a, b) => b.score - a.score || b.wins - a.wins || a.errors - b.errors);
+        } else if (stage && Array.isArray(stage.participatingBots)) {
+          leaderboard = stage.participatingBots
+            .filter(bId => livePlayerMap.has(bId))
+            .map(bId => livePlayerMap.get(bId));
+        }
+
+        // Nếu sau khi lọc mà rỗng (toàn bộ bot cũ trong stage đã bị xóa), dùng chính livePlayers
+        if (leaderboard.length === 0) {
+          leaderboard = [...livePlayers].sort((a, b) => b.score - a.score || b.wins - a.wins || a.errors - b.errors);
+        }
+
+        // Trận gần đây của giải đấu và vòng này từ database
+        const recentMatches = await db.getRecentMatches({ tournamentId: tour.id, stageIndex: stageNum }, 20);
+
+        return res.status(200).json({
+          success: true,
+          tournamentId: tour.id,
+          tournamentName: tour.name,
+          stagesCount: tour.stagesCount,
+          currentStageIndex: tour.currentStageIndex,
+          selectedStageIndex: stageNum,
+          selectedStageName: stage ? stage.name : `Vòng ${stageNum}`,
+          isPrizeAnnounced: tour.isPrizeAnnounced,
+          prizes: tour.prizes,
+          isBatchRunning: isWorkerRunning || (tour.progress && tour.progress.isRunning),
+          queueLength: matchQueue.length,
+          leaderboard,
+          recentMatches
+        });
+      }
+    }
+
+    // 3. Mặc định truy vấn theo RoomId (PUBLIC hoặc phòng riêng) trực tiếp từ database
+    const leaderboard = await db.getLeaderboard(roomId);
+    const primary = getPrimaryGlobalTournament();
+    const recentMatches = await db.getRecentMatches({ roomId }, 20);
 
     return res.status(200).json({
       success: true,
       roomId,
+      tournamentId: primary ? primary.id : null,
+      tournamentName: primary ? primary.name : null,
+      isPrizeAnnounced: primary ? primary.isPrizeAnnounced : true,
+      prizes: primary ? primary.prizes : [],
       isBatchRunning: isWorkerRunning,
-      queueLength: submissionQueue.length,
+      queueLength: matchQueue.length,
       leaderboard,
       recentMatches
     });
@@ -1352,13 +2162,50 @@ app.get('/api/leaderboard', (req, res) => {
 });
 
 /**
+ * GET /api/players?roomId=...&tournamentId=...
+ * Lấy danh sách toàn bộ người chơi / bot trực tiếp từ Database
+ */
+app.get('/api/players', async (req, res) => {
+  try {
+    const { roomId, tournamentId } = req.query;
+    const filter = {};
+    if (roomId) filter.roomId = roomId;
+    if (tournamentId) filter.tournamentId = tournamentId;
+    const players = await db.getPlayers(filter);
+    return res.status(200).json({ success: true, players });
+  } catch (error) {
+    console.error('Error in /api/players:', error);
+    return res.status(500).json({ error: 'Internal server error while fetching players.' });
+  }
+});
+
+/**
+ * GET /api/matches/recent?roomId=...&tournamentId=...&stageIndex=...&limit=...
+ * Lấy danh sách các trận đấu gần đây trực tiếp từ Database
+ */
+app.get('/api/matches/recent', async (req, res) => {
+  try {
+    const { roomId, tournamentId, stageIndex, limit } = req.query;
+    const matches = await db.getRecentMatches({
+      roomId,
+      tournamentId,
+      stageIndex
+    }, limit ? Number(limit) : 20);
+    return res.status(200).json({ success: true, matches });
+  } catch (error) {
+    console.error('Error in /api/matches/recent:', error);
+    return res.status(500).json({ error: 'Internal server error while fetching recent matches.' });
+  }
+});
+
+/**
  * 3. GET /api/matches/:matchId
  * Lấy log chi tiết trận đấu để phát Replay
  */
-app.get('/api/matches/:matchId', (req, res) => {
+app.get('/api/matches/:matchId', async (req, res) => {
   try {
     const { matchId } = req.params;
-    const match = dbMatches.get(matchId);
+    const match = await db.getMatchById(matchId);
 
     if (!match) {
       return res.status(404).json({ error: `Match ${matchId} not found.` });
@@ -1375,12 +2222,54 @@ app.get('/api/matches/:matchId', (req, res) => {
 });
 
 /**
- * 4. GET /api/room/create
- * Tạo mã phòng riêng
+ * 4. ALL /api/room/create
+ * Tạo mã phòng riêng và tự động đăng ký vào danh sách Private Tournaments
  */
-app.get('/api/room/create', (req, res) => {
+app.all('/api/room/create', async (req, res) => {
   try {
+    const authUser = extractUserFromReq(req);
     const newRoomId = `ROOM_${Date.now().toString(36).toUpperCase()}_${Math.random().toString(36).substring(2, 5).toUpperCase()}`;
+
+    const roomTour = {
+      id: newRoomId,
+      name: `Phòng Riêng (${newRoomId})`,
+      description: `Phòng thi đấu riêng do người dùng ${authUser ? authUser.username : 'khách'} tạo.`,
+      type: 'PRIVATE',
+      createdBy: authUser ? authUser.username : 'User',
+      createdAt: Date.now(),
+      isOpenForRegistration: true,
+      registrationStart: new Date().toISOString(),
+      registrationEnd: new Date(Date.now() + 3600 * 1000 * 24 * 30).toISOString(),
+      status: 'REGISTRATION',
+      stagesCount: 1,
+      currentStageIndex: 1,
+      stages: [
+        {
+          stageIndex: 1,
+          name: 'Vòng Đấu Tự Do',
+          topNToAdvance: 1,
+          status: 'REGISTRATION',
+          participatingBots: [],
+          standings: [],
+          matches: []
+        }
+      ],
+      prizes: [],
+      isPrizeAnnounced: false,
+      progress: {
+        isRunning: false,
+        totalMatches: 0,
+        completedMatches: 0,
+        currentBatch: 0,
+        totalBatches: 0,
+        percentage: 0,
+        statusText: 'Sẵn sàng'
+      }
+    };
+
+    await db.saveTournament(roomTour);
+    broadcastSSE('tournament_updated', { tournament: roomTour });
+
     return res.status(201).json({
       success: true,
       data: { roomId: newRoomId, createdAt: Date.now() }
@@ -1398,20 +2287,39 @@ const server = app.listen(PORT, () => {
   console.log(`====================================================================`);
   console.log(`🏰 RPS ARENA 9X9 - ROUND-ROBIN QUEUE CHUNKING SERVER`);
   console.log(`🌐 URL: http://localhost:${PORT}`);
-  console.log(`💾 Data Path: ${DATA_DIR}`);
+  console.log(`💾 Database Mode: ${db.mode} (${db.mode === 'SUPABASE' ? 'Supabase PostgreSQL Cloud' : 'In-Memory RAM Safe Mode'})`);
   console.log(`👥 Loaded Bots: ${dbPlayers.size}`);
   console.log(`⚔️  Loaded Matches: ${dbMatches.size}`);
   console.log(`⚙️  Batch Quota: Max ${BATCH_SIZE} matches / turn (Rest: ${WORKER_REST_MS}ms)`);
+  console.log(`🛡️  Disk Writes: 0 file writes (Clean local storage)`);
   console.log(`====================================================================`);
+});
+
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`💥 [Server] Cổng ${PORT} hiện đang bận! Vui lòng kiểm tra lại tiến trình đang dùng cổng này.`);
+  } else {
+    console.error(`💥 [Server Error]:`, err);
+  }
 });
 
 export { 
   app, 
   server, 
+  db,
   dbPlayers, 
   dbMatches, 
+  dbTournaments,
+  dbUsers,
+  matchQueue,
   submissionQueue, 
+  isAutoQueueEnabled,
+  processMatchQueue,
   processQueue, 
+  enqueueBotUnplayedMatches,
+  enqueueAllUnplayedMatches,
   enqueueBotForRoundRobin, 
-  getSortedLeaderboard 
+  getSortedLeaderboard,
+  hasMatchBeenPlayed,
+  getMatchPairKey
 };

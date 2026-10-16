@@ -53,10 +53,6 @@
         </div>
       </div>
 
-      <div class="status-indicator" id="arenaStatus">
-        <span class="status-dot"></span>
-        <span class="status-label" id="statusLabel">Sẵn sàng</span>
-      </div>
       <button id="themeToggleBtn" class="btn btn-secondary icon-btn" title="Đổi giao diện Sáng/Tối">
         <span id="themeIcon">☀️</span>
       </button>
@@ -97,12 +93,20 @@
           <div class="countdown-header">
             <div class="countdown-title-group">
               <span class="countdown-icon">🏆</span>
-              <div>
-                <h3 id="tournamentCountdownTitle">Giải Đấu Oằn Tù Tì 9×9 Championship</h3>
+              <div class="countdown-heading-area">
+                <div class="guide-tour-select-row">
+                  <select id="guideTournamentSelect" class="form-control form-control-sm guide-tour-select" aria-label="Chọn giải đấu">
+                    <!-- Populated dynamically -->
+                  </select>
+                </div>
+                <h3 id="tournamentCountdownTitle" style="display: none;">Giải Đấu Oằn Tù Tì 9×9 Championship</h3>
                 <p id="countdownContextText">Đang đếm ngược đến hạn chót nộp bài giải đấu...</p>
               </div>
             </div>
-            <span class="badge badge-primary" id="tournamentStatusBadge">Đang Mở Nộp Bài</span>
+            <div class="countdown-badges-group">
+              <span class="badge badge-warning" id="tournamentStageBadge">Vòng 1: Vòng Bảng</span>
+              <span class="badge badge-primary" id="tournamentStatusBadge">Đang Mở Nộp Bài</span>
+            </div>
           </div>
 
           <div class="countdown-timer-grid">
@@ -213,8 +217,8 @@
          TAB 2: KHU NỘP CODE RIÊNG BIỆT (#view-submit)
          ====================================================================== -->
     <section class="tab-view" id="view-submit">
-      <div class="submit-layout-container">
-        <!-- Khung cấu hình bot & hàng đợi -->
+      <div class="submit-layout submit-layout-container">
+        <!-- CỘT TRÁI: THÔNG TIN BOT (.submit-sidebar) -->
         <div class="submit-sidebar">
           <div class="panel">
             <div class="panel-header">
@@ -226,6 +230,18 @@
             </div>
 
             <div class="panel-body">
+              <!-- Banner Yêu Cầu Đăng Nhập khi chưa Auth -->
+              <div class="auth-required-banner" id="submitAuthRequiredBanner" style="display: none;">
+                <div class="auth-banner-icon">🔐</div>
+                <div class="auth-banner-content">
+                  <h4>Vui lòng Đăng Nhập / Đăng Ký để nộp bot thi đấu</h4>
+                  <p>Bạn cần đăng nhập tài khoản để nộp bot, quản lý thuật toán độc quyền và tích lũy điểm xếp hạng.</p>
+                  <button type="button" class="btn btn-sm btn-primary" id="btnOpenLoginFromSubmit">
+                    <span class="icon">🔑</span> Đăng Nhập / Đăng Ký Ngay
+                  </button>
+                </div>
+              </div>
+
               <!-- Banner Khóa Cổng Nộp Bot khi hết hạn hoặc admin đóng -->
               <div class="submission-lock-banner" id="submissionLockBanner" style="display: none;">
                 <div class="lock-icon">🔒</div>
@@ -235,16 +251,36 @@
                 </div>
               </div>
 
+              <!-- Chọn Giải Đấu Tham Gia -->
               <div class="form-group">
-                <label for="bot-name">Tên Bot (Bot Name):</label>
-                <input type="text" id="bot-name" class="form-control" value="CyberWarrior" placeholder="Nhập tên bot hiển thị..." />
+                <label for="submitTournamentSelect">🏆 Chọn Giải Đấu Tham Gia:</label>
+                <select id="submitTournamentSelect" class="form-control">
+                  <!-- Populated dynamically -->
+                </select>
+                <div class="reg-time-notice" id="regTimeNotice">
+                  <span class="icon">⏰</span> <span id="regTimeNoticeText">Thời hạn nộp bot: Đang tải...</span>
+                </div>
               </div>
 
+              <!-- Input: Tên Bot -->
               <div class="form-group">
-                <label for="bot-author">Tác giả / Người chơi (Author Name):</label>
-                <input type="text" id="bot-author" class="form-control" value="Challenger" placeholder="Nhập tên của bạn..." />
+                <label for="input-bot-name">Tên Bot (Bot Name):</label>
+                <input type="text" id="input-bot-name" class="form-control" value="CyberWarrior" placeholder="Nhập tên bot hiển thị..." />
               </div>
 
+              <!-- Input: Tác Giả / Người Chơi (Readonly & Gán theo Tài Khoản) -->
+              <div class="form-group">
+                <label for="input-author">Tác giả / Tài khoản dự thi:</label>
+                <input type="text" id="input-author" class="form-control" readonly disabled placeholder="Chưa đăng nhập..." />
+                <div class="anonymous-toggle-row">
+                  <label class="checkbox-label" for="anonymousCheckbox">
+                    <input type="checkbox" id="anonymousCheckbox" />
+                    <span>🕵️ Thi đấu Ẩn danh (Hiển thị tên tác giả là "Ẩn danh")</span>
+                  </label>
+                </div>
+              </div>
+
+              <!-- Select: Ngôn Ngữ Lập Trình -->
               <div class="form-group">
                 <label for="languageSelect">Ngôn ngữ lập trình:</label>
                 <select id="languageSelect" class="form-control">
@@ -254,6 +290,7 @@
                 </select>
               </div>
 
+              <!-- Select & Action: Chế độ / Phòng Đấu -->
               <div class="form-group">
                 <label for="roomTypeSelect">Chế độ / Phòng Đấu:</label>
                 <div class="room-selector-row">
@@ -261,7 +298,7 @@
                     <option value="PUBLIC">Phòng Chung (Public Arena)</option>
                     <option value="CUSTOM">Nhập Room ID Riêng...</option>
                   </select>
-                  <button id="createRoomBtn" class="btn btn-sm btn-secondary" title="Tạo mã phòng riêng mới">+ Tạo Phòng</button>
+                  <button type="button" id="createRoomBtn" class="btn btn-sm btn-secondary" title="Tạo mã phòng riêng mới">+ Tạo Phòng</button>
                 </div>
               </div>
 
@@ -269,28 +306,29 @@
                 <label for="customRoomInput">Mã Room ID:</label>
                 <div class="custom-room-row">
                   <input type="text" id="customRoomInput" class="form-control" placeholder="Ví dụ: ROOM_ABC123" />
-                  <button id="joinRoomBtn" class="btn btn-sm btn-primary">Vào</button>
+                  <button type="button" id="joinRoomBtn" class="btn btn-sm btn-primary">Vào</button>
                 </div>
               </div>
 
-              <!-- Trạng thái Hàng Đợi (Queue Status) -->
+              <!-- Box trạng thái: Hàng Đợi (Queue Status) -->
               <div class="queue-status-card" id="queueStatusCard">
                 <div class="queue-status-header">
                   <span class="queue-pulse"></span>
                   <span class="queue-title" id="queueStatusTitle">Trạng thái Hàng Đợi (Batch)</span>
                 </div>
-                <div class="queue-status-desc" id="queueStatusDesc">Sẵn sàng nộp code vào giải đấu.</div>
+                <div class="queue-status-desc" id="queueStatusDesc">Hàng đợi trống. Các trận đấu của đợt này đã hoàn tất!</div>
               </div>
 
-              <button type="button" id="submitBotBtn" class="btn btn-primary btn-block btn-lg pulse-hover">
+              <!-- Nút hành động chính -->
+              <button type="button" id="btn-submit-bot" class="btn btn-primary btn-block btn-lg pulse-hover">
                 <span class="icon">🚀</span> Nộp / Cập Nhật Code Bot
               </button>
             </div>
           </div>
         </div>
 
-        <!-- Khung Soạn Thảo Code Mở Rộng -->
-        <div class="submit-editor-area">
+        <!-- CỘT PHẢI: KHUNG SOẠN THẢO THUẬT TOÁN (.submit-editor-container) -->
+        <div class="submit-editor-container submit-editor-area">
           <div class="panel code-panel-full">
             <div class="panel-header">
               <div class="panel-title">
@@ -306,7 +344,7 @@
             </div>
 
             <div class="editor-wrapper-full">
-              <textarea id="bot-code" class="code-editor" spellcheck="false"></textarea>
+              <textarea id="bot-code" class="code-editor" spellcheck="false" placeholder="// Viết thuật toán hàm makeMove(gameState) ở đây..."></textarea>
             </div>
 
             <div class="editor-footer">
@@ -333,6 +371,22 @@
               </div>
               <div class="header-tools">
                 <button id="refreshLbBtn" class="btn btn-sm btn-outline" title="Làm mới Bảng xếp hạng">🔄 Làm mới</button>
+              </div>
+            </div>
+
+            <!-- Bộ Lọc Giải Đấu & Vòng Đấu Multi-Stage -->
+            <div class="lb-filters-bar">
+              <div class="lb-filter-item">
+                <label for="lbTournamentSelect">🏆 Giải Đấu:</label>
+                <select id="lbTournamentSelect" class="form-control form-control-sm">
+                  <!-- Populated dynamically -->
+                </select>
+              </div>
+              <div class="lb-filter-item" id="lbStageFilterGroup" style="display: none;">
+                <label for="lbStageSelect">⚔️ Vòng Đấu:</label>
+                <select id="lbStageSelect" class="form-control form-control-sm">
+                  <!-- Populated dynamically -->
+                </select>
               </div>
             </div>
 
@@ -625,142 +679,209 @@
               <span class="stat-label">Cổng Nộp Bot</span>
               <span class="stat-val reg-val" id="adminStatRegDoor">ĐANG MỞ</span>
             </div>
-          </div>
-        </div>
-
-        <div class="admin-grid-layout">
-          <!-- KHỐI A: THIẾT LẬP THỜI GIAN GIẢI ĐẤU -->
-          <div class="panel admin-panel">
-            <div class="panel-header">
-              <div class="panel-title">
-                <span class="icon">📅</span>
-                <h3>A. Thiết Lập Thời Gian Giải Đấu</h3>
-              </div>
-              <span class="badge badge-primary" id="adminScheduleStatusBadge">Lịch Trình</span>
-            </div>
-            <div class="panel-body">
-              <div class="form-group">
-                <label for="adminRegStart">Thời gian MỞ nộp bài (Registration Start):</label>
-                <input type="datetime-local" id="adminRegStart" class="form-control" />
-              </div>
-              <div class="form-group">
-                <label for="adminRegEnd">Thời gian ĐÓNG nộp bài (Registration End):</label>
-                <input type="datetime-local" id="adminRegEnd" class="form-control" />
-              </div>
-              <div class="form-group">
-                <label for="adminTourStart">Thời gian BẮT ĐẦU thi đấu (Tournament Start):</label>
-                <input type="datetime-local" id="adminTourStart" class="form-control" />
-              </div>
-              <div class="form-group">
-                <label for="adminTourStatusSelect">Trạng thái giải đấu:</label>
-                <select id="adminTourStatusSelect" class="form-control">
-                  <option value="UPCOMING">Sắp Diễn Ra (UPCOMING)</option>
-                  <option value="REGISTRATION">Đang Mở Đăng Ký (REGISTRATION)</option>
-                  <option value="RUNNING">Đang Thi Đấu (RUNNING)</option>
-                  <option value="COMPLETED">Đã Hoàn Thành (COMPLETED)</option>
-                </select>
-              </div>
-
-              <div class="admin-action-buttons">
-                <button type="button" id="btnAdminSaveSchedule" class="btn btn-primary">
-                  <span class="icon">💾</span> Lưu Cấu Hình Thời Gian
-                </button>
-                <button type="button" id="btnAdminToggleReg" class="btn btn-warning">
-                  <span class="icon">🔒</span> Mở / Khóa Cổng Nộp Bot
-                </button>
-                <button type="button" id="btnAdminStartNow" class="btn btn-secondary">
-                  <span class="icon">🚀</span> Bắt Đầu Giải Đấu Ngay
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <!-- KHỐI B: ĐIỀU HÀNH THI ĐẤU TOURNAMENT -->
-          <div class="panel admin-panel">
-            <div class="panel-header">
-              <div class="panel-title">
-                <span class="icon">⚔️</span>
-                <h3>B. Điều Hành Thi Đấu (Matchmaking)</h3>
-              </div>
-              <span class="badge badge-warning" id="adminProgressBadge">Sẵn Sàng</span>
-            </div>
-            <div class="panel-body">
-              <p class="admin-help-text">
-                Kích hoạt giải đấu chính thức: Hệ thống sẽ ghép cặp <strong>vòng tròn Round-Robin</strong> toàn bộ bot tham gia (2 lượt Red/Blue đối xứng), chia thành các <strong>Batch 10 trận</strong> và tự động thi đấu.
-              </p>
-
-              <div class="tournament-execution-card">
-                <div class="exec-stats-box">
-                  <div class="exec-stat-item">
-                    <span class="exec-lbl">Số Bot Tham Gia:</span>
-                    <strong class="exec-val" id="adminExecBotCount">0</strong>
-                  </div>
-                  <div class="exec-stat-item">
-                    <span class="exec-lbl">Quy Mô Lát Cắt:</span>
-                    <strong class="exec-val">10 trận / batch</strong>
-                  </div>
-                </div>
-
-                <div class="progress-box-wrapper">
-                  <div class="progress-info-row">
-                    <span id="adminProgressText">Chưa có giải đấu nào đang chạy</span>
-                    <strong id="adminProgressPercent">0%</strong>
-                  </div>
-                  <div class="progress-bar-container">
-                    <div class="progress-bar-fill" id="adminProgressBarFill" style="width: 0%;"></div>
-                  </div>
-                </div>
-
-                <button type="button" id="btnAdminRunTournament" class="btn btn-primary btn-block btn-lg pulse-hover">
-                  <span class="icon">⚔️</span> Chạy Toàn Bộ Giải Đấu (Round-Robin Matchmaking)
+            <div class="admin-stat-card auto-queue-card">
+              <span class="stat-label">Hàng Chờ Đấu Tự Động</span>
+              <div class="auto-queue-control-row" style="display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px;">
+                <span class="stat-val queue-val" id="adminStatAutoQueue" style="font-size: 0.95rem; font-weight: 700; color: #10b981;">BẬT (ON)</span>
+                <button type="button" id="btnAdminToggleAutoQueue" class="btn btn-xs btn-primary" title="Bật hoặc tắt cơ chế tự động đưa bot mới nộp vào hàng chờ thi đấu">
+                  Bật/Tắt
                 </button>
               </div>
             </div>
           </div>
         </div>
 
-        <!-- KHỐI C: QUẢN LÝ CƠ CẤU & TRAO GIẢI THƯỞNG -->
-        <div class="panel admin-panel admin-prizes-panel">
+        <!-- ==================================================================
+             KHỐI 1: BẢNG QUẢN LÝ TOÀN BỘ GIẢI ĐẤU (GLOBAL & PRIVATE TOURNAMENTS)
+             ================================================================== -->
+        <div class="panel admin-panel admin-tournaments-list-panel">
           <div class="panel-header">
             <div class="panel-title">
-              <span class="icon">🏆</span>
-              <h3>C. Quản Lý Cơ Cấu & Trao Giải Thưởng (Prize Management)</h3>
+              <span class="icon">📋</span>
+              <h3>1. Danh Sách Tất Cả Giải Đấu & Phòng Đấu (Global & Private Rooms)</h3>
             </div>
-            <div class="admin-prize-header-actions">
-              <button type="button" id="btnAdminToggleAnnounce" class="btn btn-sm btn-secondary">
-                <span class="icon">📢</span> Công Bố Trao Giải
+            <div class="admin-panel-actions">
+              <button type="button" id="btnAdminTriggerAutoQueue" class="btn btn-sm btn-secondary" title="Quét toàn bộ bot chưa từng đấu với nhau và đẩy vào hàng chờ (C_n^2)">
+                <span class="icon">⚡</span> Ghép Đấu Toàn Bộ (C_n^2)
               </button>
+              <button type="button" id="btnAdminRefreshTournaments" class="btn btn-sm btn-outline">
+                <span class="icon">🔄</span> Làm Mới
+              </button>
+              <a href="#adminCreateTournamentCard" class="btn btn-sm btn-primary">
+                <span class="icon">➕</span> Tạo Giải Mới
+              </a>
             </div>
           </div>
           <div class="panel-body">
             <p class="admin-help-text">
-              Admin tự do cấu hình số lượng và nội dung giải thưởng. Khi bấm <strong>"Công Bố Trao Giải"</strong>, Bảng xếp hạng bên Tab 3 sẽ tự động gắn Huy hiệu & Phần thưởng cho Top 1, Top 2, Top 3...
+              Theo dõi tải hệ thống, quản lý tiến trình các vòng thi đấu của các <strong>Giải đấu Toàn cầu</strong> và các <strong>Phòng thi đấu Riêng tư</strong> do người dùng tạo. Admin có quyền kích hoạt chạy vòng đấu, chốt điểm thăng hạng Top N, tạm dừng hoặc xóa phòng lỗi/spam.
             </p>
 
             <div class="table-responsive">
-              <table class="data-table prizes-edit-table" id="adminPrizesTable">
+              <table class="data-table admin-tournaments-table" id="adminTournamentsTable">
                 <thead>
                   <tr>
-                    <th style="width: 80px;">Thứ Hạng</th>
-                    <th style="width: 90px;">Huy Hiệu</th>
-                    <th style="width: 220px;">Danh Hiệu Giải</th>
-                    <th>Nội Dung Phần Thưởng</th>
-                    <th style="width: 90px; text-align: center;">Hành Động</th>
+                    <th style="min-width: 180px;">Tên Giải / Phòng</th>
+                    <th style="width: 100px;">Loại</th>
+                    <th style="min-width: 150px;">Tiến Độ Vòng Đấu</th>
+                    <th style="width: 80px; text-align: center;">Số Bot</th>
+                    <th style="width: 80px; text-align: center;">Số Trận</th>
+                    <th style="width: 130px;">Trạng Thái</th>
+                    <th style="width: 110px;">Cổng Nộp</th>
+                    <th style="min-width: 250px; text-align: center;">Hành Động Điều Khiển</th>
                   </tr>
                 </thead>
-                <tbody id="adminPrizesTableBody">
-                  <!-- Dynamic rows rendered by JS -->
+                <tbody id="adminTournamentsTableBody">
+                  <tr>
+                    <td colspan="8" class="empty-cell">Đang tải danh sách giải đấu...</td>
+                  </tr>
                 </tbody>
               </table>
             </div>
+          </div>
+        </div>
 
-            <div class="prizes-table-footer">
-              <button type="button" id="btnAdminAddPrizeRow" class="btn btn-secondary btn-sm">
-                <span class="icon">➕</span> Thêm Mức Giải Thưởng
-              </button>
-              <button type="button" id="btnAdminSavePrizes" class="btn btn-primary">
-                <span class="icon">💾</span> Lưu Cấu Hình Giải Thưởng
-              </button>
+        <!-- ==================================================================
+             KHỐI 2: FORM THIẾT LẬP & TẠO GIẢI ĐẤU MỚI (MULTI-STAGE CREATOR)
+             ================================================================== -->
+        <div class="panel admin-panel" id="adminCreateTournamentCard">
+          <div class="panel-header">
+            <div class="panel-title">
+              <span class="icon">✨</span>
+              <h3>2. Thiết Lập & Tạo Giải Đấu Mới (Multi-Stage Tournament Creator)</h3>
+            </div>
+            <span class="badge badge-primary">Tối đa 5 vòng đấu</span>
+          </div>
+          <div class="panel-body">
+            <form id="createTournamentForm" onsubmit="return false;">
+              <div class="admin-grid-layout">
+                <!-- Cột trái: Thông tin cơ bản -->
+                <div class="form-column">
+                  <div class="form-group">
+                    <label for="newTourName">Tên Giải Đấu (Bắt buộc): <span class="required-star">*</span></label>
+                    <input type="text" id="newTourName" class="form-control" placeholder="Ví dụ: RPS Arena Grand Prix 2026..." required />
+                  </div>
+
+                  <div class="form-group">
+                    <label for="newTourDesc">Mô tả / Thể lệ ngắn:</label>
+                    <textarea id="newTourDesc" class="form-control" rows="2" placeholder="Tóm tắt quy mô giải đấu, đối tượng tham gia, phần thưởng..."></textarea>
+                  </div>
+
+                  <div class="form-row-2col">
+                    <div class="form-group">
+                      <label for="newTourRegStart">Thời gian MỞ nộp bot:</label>
+                      <input type="datetime-local" id="newTourRegStart" class="form-control" />
+                    </div>
+                    <div class="form-group">
+                      <label for="newTourRegEnd">Thời gian ĐÓNG nộp bot:</label>
+                      <input type="datetime-local" id="newTourRegEnd" class="form-control" />
+                    </div>
+                  </div>
+
+                  <div class="form-group">
+                    <label for="newTourStagesCount">Số lượng vòng đấu (Stages Count):</label>
+                    <select id="newTourStagesCount" class="form-control">
+                      <option value="1">1 Vòng (Đấu Vòng Tròn 1 Vòng duy nhất)</option>
+                      <option value="2">2 Vòng (Vòng Bảng $\rightarrow$ Chung Kết)</option>
+                      <option value="3" selected>3 Vòng (Vòng Bảng $\rightarrow$ Bán Kết $\rightarrow$ Chung Kết)</option>
+                      <option value="4">4 Vòng (Vòng 1 $\rightarrow$ Tứ Kết $\rightarrow$ Bán Kết $\rightarrow$ Chung Kết)</option>
+                      <option value="5">5 Vòng (Hệ Thống 5 Giai Đoạn Leo Tháp)</option>
+                    </select>
+                  </div>
+                </div>
+
+                <!-- Cột phải: Cấu hình quy tắc thăng hạng từng vòng -->
+                <div class="form-column">
+                  <div class="stages-config-header">
+                    <label>⚙️ Cấu Hình Từng Vòng & Quy Tắc Thăng Hạng Top N:</label>
+                    <small class="admin-help-inline">Hệ thống sẽ lấy Top N bot dẫn đầu mỗi vòng để thăng hạng vào vòng tiếp theo.</small>
+                  </div>
+
+                  <div id="newTourStagesContainer" class="stages-config-container">
+                    <!-- Dynamic stage rows generated based on stagesCount -->
+                  </div>
+                </div>
+              </div>
+
+              <!-- Cấu hình giải thưởng khi tạo giải -->
+              <div class="tour-prizes-creator-box">
+                <div class="prizes-creator-header">
+                  <div class="title-with-icon">
+                    <span class="icon">🎁</span>
+                    <label>Cơ Cấu Giải Thưởng Ban Đầu:</label>
+                  </div>
+                  <button type="button" id="btnAdminAddPrizeRowNewTour" class="btn btn-xs btn-secondary">
+                    + Thêm Hạng Giải
+                  </button>
+                </div>
+                <div class="table-responsive">
+                  <table class="data-table prizes-edit-table" id="newTourPrizesTable">
+                    <thead>
+                      <tr>
+                        <th style="width: 80px;">Thứ Hạng</th>
+                        <th style="width: 90px;">Huy Hiệu</th>
+                        <th style="width: 220px;">Danh Hiệu Giải</th>
+                        <th>Nội Dung Phần Thưởng</th>
+                        <th style="width: 80px; text-align: center;">Xóa</th>
+                      </tr>
+                    </thead>
+                    <tbody id="newTourPrizesTableBody">
+                      <!-- Default rows rendered by UI -->
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div class="creator-form-footer">
+                <button type="submit" id="btnCreateTournamentSubmit" class="btn btn-primary btn-lg pulse-hover">
+                  <span class="icon">✨</span> Xác Nhận Tạo Giải Đấu Mới
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+
+        <!-- ==================================================================
+             KHỐI 3: TIẾN ĐỘ THI ĐẤU THỜI GIAN THỰC (LIVE PROGRESS TRACKER)
+             ================================================================== -->
+        <div class="panel admin-panel admin-progress-panel">
+          <div class="panel-header">
+            <div class="panel-title">
+              <span class="icon">⚡</span>
+              <h3>3. Tiến Độ Điều Hành Thi Đấu Thời Gian Thực (Live Execution Progress)</h3>
+            </div>
+            <span class="badge badge-warning" id="adminLiveProgressBadge">Sẵn Sàng</span>
+          </div>
+          <div class="panel-body">
+            <div class="tournament-execution-card">
+              <div class="exec-stats-box">
+                <div class="exec-stat-item">
+                  <span class="exec-lbl">Giải Đang Chạy:</span>
+                  <strong class="exec-val" id="adminExecTourName">Chưa chọn</strong>
+                </div>
+                <div class="exec-stat-item">
+                  <span class="exec-lbl">Vòng Thi Đấu:</span>
+                  <strong class="exec-val" id="adminExecStageName">-</strong>
+                </div>
+                <div class="exec-stat-item">
+                  <span class="exec-lbl">Tiến Độ Trận Đấu:</span>
+                  <strong class="exec-val" id="adminExecMatchesText">0 / 0 trận</strong>
+                </div>
+                <div class="exec-stat-item">
+                  <span class="exec-lbl">Quy Mô Lát Cắt:</span>
+                  <strong class="exec-val">10 trận / batch (Rest: 80ms)</strong>
+                </div>
+              </div>
+
+              <div class="progress-box-wrapper">
+                <div class="progress-info-row">
+                  <span id="adminProgressText">Hệ thống đang ở trạng thái rảnh rỗi. Chọn một giải đấu bên trên và bấm [▶ Chạy Vòng N] để bắt đầu.</span>
+                  <strong id="adminProgressPercent">0%</strong>
+                </div>
+                <div class="progress-bar-container">
+                  <div class="progress-bar-fill" id="adminProgressBarFill" style="width: 0%;"></div>
+                </div>
+              </div>
             </div>
           </div>
         </div>

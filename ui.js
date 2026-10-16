@@ -39,7 +39,7 @@ import { SAMPLE_BOTS, STARTER_TEMPLATES } from './sampleBots.js';
 // ============================================================================
 const AppState = {
   currentRoomId: 'PUBLIC',
-  playerId: `player_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+  playerId: localStorage.getItem('rps_submitted_bot_id') || `player_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
   currentMatch: null,         // Object match đang được Replay
   currentTurnIndex: 0,        // Turn hiện tại đang hiển thị
   isPlaying: false,           // Trạng thái tự động chạy Replay
@@ -93,12 +93,22 @@ const AuthState = {
 };
 
 const TournamentClientState = {
+  tournaments: [],             // Danh sách giải đấu từ /api/tournaments
+  selectedTournamentId: null,  // ID giải đấu đang chọn xem/nộp bài
+  selectedStageIndex: 1,       // Vòng đấu đang xem trên Tab 3 Leaderboard
+  allAdminTournaments: [],     // Danh sách tất cả giải + phòng riêng (Admin)
+  // Fields chi tiết của giải đang chọn
+  id: 'tournament_global_primary',
+  name: 'RPS ARENA GRAND PRIX 2026',
+  type: 'GLOBAL',
   isOpenForRegistration: true,
   isRegistrationOpenNow: true,
   registrationStart: null,
   registrationEnd: null,
   tournamentStart: null,
   status: 'REGISTRATION',
+  stages: [],
+  currentStageIndex: 1,
   prizes: [],
   isPrizeAnnounced: false,
   tournamentProgress: null,
@@ -144,7 +154,10 @@ function updateAuthUI() {
   const navUsername = document.getElementById('navUsername');
   const navUserRole = document.getElementById('navUserRole');
   const tabAdmin = document.getElementById('tab-admin');
-  const authorInput = document.getElementById('bot-author');
+  const authorInput = document.getElementById('input-author') || document.getElementById('bot-author');
+  const anonCheck = document.getElementById('anonymousCheckbox');
+  const submitAuthBanner = document.getElementById('submitAuthRequiredBanner');
+  const submitBtn = document.getElementById('btn-submit-bot') || document.getElementById('submitBotBtn');
 
   if (AuthState.user) {
     if (btnOpenAuth) btnOpenAuth.style.display = 'none';
@@ -160,14 +173,58 @@ function updateAuthUI() {
       tabAdmin.style.display = AuthState.user.role === 'admin' ? 'flex' : 'none';
     }
 
-    // Tự động điền tác giả khi nộp bot
-    if (authorInput && (!authorInput.value || authorInput.value === 'Challenger' || authorInput.value === 'Player')) {
-      authorInput.value = AuthState.user.username;
+    // Ẩn banner yêu cầu đăng nhập trên form nộp bot & mở khóa nút Submit
+    if (submitAuthBanner) {
+      submitAuthBanner.style.display = 'none';
+    }
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.classList.remove('disabled');
+    }
+
+    if (anonCheck) {
+      anonCheck.disabled = false;
+    }
+
+    // Tự động điền và khóa ô tác giả theo tài khoản đăng nhập / chế độ ẩn danh
+    if (authorInput) {
+      authorInput.readOnly = true;
+      authorInput.disabled = false;
+      if (anonCheck && anonCheck.checked) {
+        authorInput.value = 'Ẩn danh (Private Player)';
+        authorInput.style.opacity = '0.65';
+        authorInput.style.fontStyle = 'italic';
+      } else {
+        authorInput.value = AuthState.user.username;
+        authorInput.style.opacity = '1';
+        authorInput.style.fontStyle = 'normal';
+      }
     }
   } else {
     if (btnOpenAuth) btnOpenAuth.style.display = 'inline-flex';
     if (loggedInBar) loggedInBar.style.display = 'none';
     if (tabAdmin) tabAdmin.style.display = 'none';
+
+    // Hiện banner yêu cầu đăng nhập trên form nộp bot & khóa nút Submit
+    if (submitAuthBanner) {
+      submitAuthBanner.style.display = 'flex';
+    }
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.classList.add('disabled');
+    }
+
+    if (anonCheck) {
+      anonCheck.disabled = true;
+    }
+
+    if (authorInput) {
+      authorInput.readOnly = true;
+      authorInput.disabled = true;
+      authorInput.value = 'Chưa đăng nhập (Vui lòng đăng nhập)';
+      authorInput.style.opacity = '0.5';
+      authorInput.style.fontStyle = 'italic';
+    }
 
     // Nếu đang đứng ở view-admin thì chuyển về view-guide
     const adminView = document.getElementById('view-admin');
@@ -323,35 +380,117 @@ async function handleLogout() {
 // ============================================================================
 
 async function fetchTournamentStatus() {
+  await fetchTournamentsList();
+}
+
+async function fetchTournamentsList() {
   try {
-    const res = await fetch('/api/tournament/status');
+    const res = await fetch('/api/tournaments');
     if (!res.ok) return;
     const json = await res.json();
-    if (!json.success || !json.data) return;
+    if (!json.success || !Array.isArray(json.tournaments)) return;
 
-    Object.assign(TournamentClientState, json.data);
+    TournamentClientState.tournaments = json.tournaments;
+
+    // Nếu chưa chọn giải hoặc giải đã chọn không còn tồn tại -> chọn giải đầu tiên (hoặc primaryId)
+    if (!TournamentClientState.selectedTournamentId || 
+        !TournamentClientState.tournaments.some(t => t.id === TournamentClientState.selectedTournamentId)) {
+      TournamentClientState.selectedTournamentId = json.primaryId || (json.tournaments[0]?.id) || 'tournament_global_primary';
+    }
+
+    syncSelectedTournamentDetails();
+    populateTournamentDropdowns();
     updateTournamentUI();
   } catch (err) {
-    console.error('[Tournament] Lỗi khi tải trạng thái giải đấu:', err);
+    console.error('[Tournament] Lỗi khi tải danh sách giải đấu:', err);
   }
+}
+
+function syncSelectedTournamentDetails() {
+  const selectedTour = TournamentClientState.tournaments.find(t => t.id === TournamentClientState.selectedTournamentId)
+    || TournamentClientState.tournaments[0];
+  if (selectedTour) {
+    Object.assign(TournamentClientState, selectedTour);
+    const stages = selectedTour.stages || [];
+    if (!stages.some(s => s.index === TournamentClientState.selectedStageIndex)) {
+      TournamentClientState.selectedStageIndex = selectedTour.currentStageIndex || 1;
+    }
+  }
+}
+
+function populateTournamentDropdowns() {
+  const tours = TournamentClientState.tournaments || [];
+  const selectedId = TournamentClientState.selectedTournamentId;
+
+  // Dropdown Tab 1: #guideTournamentSelect
+  const guideSel = document.getElementById('guideTournamentSelect');
+  if (guideSel) {
+    guideSel.innerHTML = tours.map(t => `
+      <option value="${t.id}" ${t.id === selectedId ? 'selected' : ''}>
+        ${t.name} (${t.status === 'RUNNING' ? '⚔️ Đang đấu' : t.status === 'COMPLETED' ? '🎉 Đã kết thúc' : '🟢 Đang mở'})
+      </option>
+    `).join('');
+  }
+
+  // Dropdown Tab 2: #submitTournamentSelect
+  const submitSel = document.getElementById('submitTournamentSelect');
+  if (submitSel) {
+    submitSel.innerHTML = tours.map(t => `
+      <option value="${t.id}" ${t.id === selectedId ? 'selected' : ''}>
+        ${t.name} (Vòng ${t.currentStageIndex || 1}/${t.stages?.length || 1})
+      </option>
+    `).join('');
+  }
+
+  // Dropdown Tab 3: #lbTournamentSelect
+  const lbSel = document.getElementById('lbTournamentSelect');
+  if (lbSel) {
+    lbSel.innerHTML = tours.map(t => `
+      <option value="${t.id}" ${t.id === selectedId ? 'selected' : ''}>
+        ${t.name}
+      </option>
+    `).join('');
+  }
+
+  // Dropdown Stage Tab 3: #lbStageSelect
+  populateLeaderboardStagesDropdown();
+}
+
+function populateLeaderboardStagesDropdown() {
+  const selectedTour = TournamentClientState.tournaments.find(t => t.id === TournamentClientState.selectedTournamentId);
+  const lbStageSel = document.getElementById('lbStageSelect');
+  if (!lbStageSel) return;
+
+  const stages = selectedTour?.stages || [{ index: 1, name: 'Vòng Bảng', status: 'RUNNING' }];
+  lbStageSel.innerHTML = stages.map(s => `
+    <option value="${s.index}" ${s.index === TournamentClientState.selectedStageIndex ? 'selected' : ''}>
+      Vòng ${s.index}: ${s.name} (${s.status === 'COMPLETED' ? 'Hoàn thành' : s.status === 'RUNNING' ? 'Đang chạy' : 'Chưa đấu'})
+    </option>
+  `).join('');
 }
 
 function updateTournamentUI() {
   const ts = TournamentClientState;
+  const currentTour = ts.tournaments.find(t => t.id === ts.selectedTournamentId) || ts;
+  const currentStage = currentTour.stages?.find(s => s.index === currentTour.currentStageIndex) || currentTour.stages?.[0];
 
   // 1. Cập nhật Countdown Card ở Tab 1
   const badgeEl = document.getElementById('tournamentStatusBadge');
+  const stageBadgeEl = document.getElementById('tournamentStageBadge');
   const contextTextEl = document.getElementById('countdownContextText');
   const announceBadge = document.getElementById('prizesAnnounceBadge');
 
   if (badgeEl) {
-    if (ts.status === 'RUNNING') {
+    if (currentTour.status === 'RUNNING') {
       badgeEl.innerText = '⚔️ Đang Thi Đấu';
       badgeEl.className = 'badge badge-warning';
-    } else if (ts.status === 'COMPLETED') {
+    } else if (currentTour.status === 'COMPLETED') {
       badgeEl.innerText = '🎉 Đã Hoàn Thành';
       badgeEl.className = 'badge badge-success';
-    } else if (ts.isRegistrationOpenNow) {
+    } else if (currentTour.status === 'PAUSED') {
+      badgeEl.innerText = '⏸ Tạm Dừng';
+      badgeEl.className = 'badge badge-secondary';
+    } else if (currentTour.isRegistrationOpenNow) {
       badgeEl.innerText = '🟢 Đang Mở Nộp Bài';
       badgeEl.className = 'badge badge-primary';
     } else {
@@ -360,41 +499,57 @@ function updateTournamentUI() {
     }
   }
 
+  if (stageBadgeEl) {
+    const totalStages = currentTour.stages?.length || 1;
+    stageBadgeEl.innerText = `Vòng ${currentTour.currentStageIndex || 1} / ${totalStages}: ${currentStage?.name || 'Vòng Đấu'}`;
+  }
+
   if (contextTextEl) {
-    if (ts.status === 'RUNNING') {
-      contextTextEl.innerText = 'Giải đấu đang diễn ra các lượt trận Round-Robin!';
-    } else if (ts.status === 'COMPLETED') {
+    if (currentTour.status === 'RUNNING') {
+      contextTextEl.innerText = `Giải đấu đang thi đấu các cặp trận Round-Robin vòng ${currentTour.currentStageIndex || 1} (${currentStage?.name || ''})!`;
+    } else if (currentTour.status === 'COMPLETED') {
       contextTextEl.innerText = 'Giải đấu đã kết thúc và vinh danh những nhà vô địch!';
-    } else if (ts.isRegistrationOpenNow) {
-      contextTextEl.innerText = 'Hạn chót nộp bot: ' + (ts.registrationEnd ? new Date(ts.registrationEnd).toLocaleString('vi-VN') : 'Sắp tới');
+    } else if (currentTour.isRegistrationOpenNow) {
+      contextTextEl.innerText = 'Hạn chót nộp bot: ' + (currentTour.registrationEnd ? new Date(currentTour.registrationEnd).toLocaleString('vi-VN') : 'Sắp tới');
     } else {
       contextTextEl.innerText = 'Cổng nộp bot hiện đã đóng hoặc chưa tới thời gian mở.';
     }
   }
 
   if (announceBadge) {
-    announceBadge.innerText = ts.isPrizeAnnounced ? 'Đã Công Bố Giải Thưởng' : 'Đang Cập Nhật';
-    announceBadge.className = ts.isPrizeAnnounced ? 'badge badge-success' : 'badge badge-secondary';
+    announceBadge.innerText = currentTour.isPrizeAnnounced ? 'Đã Công Bố Giải Thưởng' : 'Đang Cập Nhật';
+    announceBadge.className = currentTour.isPrizeAnnounced ? 'badge badge-success' : 'badge badge-secondary';
   }
 
-  renderOfficialPrizes();
+  renderOfficialPrizes(currentTour.prizes, currentTour.isPrizeAnnounced);
 
-  // 2. Cập nhật Banner Khóa Nộp Bot ở Tab 2
+  // 2. Cập nhật Tab 2: Nộp bot & Banner Khóa
   const lockBanner = document.getElementById('submissionLockBanner');
-  const submitBtn = document.getElementById('submitBotBtn');
+  const submitBtn = document.getElementById('btn-submit-bot') || document.getElementById('submitBotBtn');
+  const regNoticeEl = document.getElementById('regTimeNotice');
+  const regNoticeText = document.getElementById('regTimeNoticeText');
 
   const isUserAdmin = AuthState.user && AuthState.user.role === 'admin';
-  const isSubmissionBlocked = !ts.isRegistrationOpenNow && !isUserAdmin;
+  const isSubmissionBlocked = !currentTour.isRegistrationOpenNow && !isUserAdmin;
 
   if (lockBanner) {
     lockBanner.style.display = isSubmissionBlocked ? 'flex' : 'none';
   }
-  if (submitBtn && isSubmissionBlocked) {
-    submitBtn.disabled = true;
-    submitBtn.title = 'Cổng nộp bot hiện đang đóng!';
-  } else if (submitBtn) {
-    submitBtn.disabled = false;
-    submitBtn.title = '';
+  if (submitBtn) {
+    if (isSubmissionBlocked) {
+      submitBtn.disabled = true;
+      submitBtn.title = 'Cổng nộp bot hiện đang đóng!';
+    } else {
+      submitBtn.disabled = false;
+      submitBtn.title = '';
+    }
+  }
+
+  if (regNoticeText) {
+    const startStr = currentTour.registrationStart ? new Date(currentTour.registrationStart).toLocaleString('vi-VN') : 'Không giới hạn';
+    const endStr = currentTour.registrationEnd ? new Date(currentTour.registrationEnd).toLocaleString('vi-VN') : 'Không giới hạn';
+    const statusStr = currentTour.isRegistrationOpenNow ? '🟢 ĐANG MỞ' : '🔴 ĐÃ ĐÓNG';
+    regNoticeText.innerHTML = `<strong>Thời gian nộp bot (${currentTour.name || 'Giải đấu'}):</strong> Từ <code>${startStr}</code> đến <code>${endStr}</code> &bull; Trạng thái: <strong>${statusStr}</strong>`;
   }
 
   // 3. Cập nhật Admin Dashboard (nếu đang là Admin)
@@ -403,12 +558,14 @@ function updateTournamentUI() {
   }
 }
 
-function renderOfficialPrizes() {
+function renderOfficialPrizes(prizesList, isAnnounced) {
   const container = document.getElementById('officialPrizesGrid');
   if (!container) return;
 
-  const prizes = TournamentClientState.prizes || [];
-  if (!TournamentClientState.isPrizeAnnounced || prizes.length === 0) {
+  const prizes = prizesList || TournamentClientState.prizes || [];
+  const announced = isAnnounced !== undefined ? isAnnounced : TournamentClientState.isPrizeAnnounced;
+
+  if (!announced || prizes.length === 0) {
     container.innerHTML = `<div class="log-empty">Ban Tổ Chức đang hoàn thiện cơ cấu giải thưởng chính thức.</div>`;
     return;
   }
@@ -431,18 +588,19 @@ function startCountdownTimer() {
 
   function update() {
     const ts = TournamentClientState;
+    const currentTour = ts.tournaments?.find(t => t.id === ts.selectedTournamentId) || ts;
     const now = Date.now();
     let targetTime = null;
 
-    if (ts.status === 'RUNNING' || ts.status === 'COMPLETED') {
+    if (currentTour.status === 'RUNNING' || currentTour.status === 'COMPLETED') {
       setCountdownBoxes(0, 0, 0, 0);
       return;
     }
 
-    const regEnd = ts.registrationEnd ? new Date(ts.registrationEnd).getTime() : null;
-    const tourStart = ts.tournamentStart ? new Date(ts.tournamentStart).getTime() : null;
+    const regEnd = currentTour.registrationEnd ? new Date(currentTour.registrationEnd).getTime() : null;
+    const tourStart = currentTour.tournamentStart ? new Date(currentTour.tournamentStart).getTime() : null;
 
-    if (ts.isRegistrationOpenNow && regEnd && regEnd > now) {
+    if (currentTour.isRegistrationOpenNow && regEnd && regEnd > now) {
       targetTime = regEnd;
     } else if (tourStart && tourStart > now) {
       targetTime = tourStart;
@@ -479,78 +637,370 @@ function startCountdownTimer() {
   TournamentClientState.countdownTimer = setInterval(update, 1000);
 }
 
-// Cập nhật dữ liệu trên Admin Dashboard
+// ============================================================================
+// ADMIN TOURNAMENT ENGINE (DASHBOARD, MULTI-STAGE CONTROLS & CREATOR)
+// ============================================================================
+
+async function fetchAdminAllTournaments() {
+  if (!AuthState.token || AuthState.user?.role !== 'admin') return;
+
+  try {
+    const res = await fetch('/api/admin/tournaments/all', {
+      headers: { 'Authorization': `Bearer ${AuthState.token}` }
+    });
+    if (!res.ok) return;
+    const json = await res.json();
+    if (!json.success || !Array.isArray(json.tournaments)) return;
+
+    TournamentClientState.allAdminTournaments = json.tournaments;
+    renderAdminTournamentsTable();
+    renderAdminDashboardData();
+  } catch (err) {
+    console.error('[Admin] Lỗi khi tải danh sách giải đấu admin:', err);
+  }
+}
+
+function renderAdminTournamentsTable() {
+  const tbody = document.getElementById('adminTournamentsTableBody');
+  if (!tbody) return;
+
+  const list = TournamentClientState.allAdminTournaments || [];
+  if (list.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="8" class="empty-cell">Chưa có giải đấu hoặc phòng nào trong hệ thống.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = list.map(t => {
+    const currentStage = t.stages?.find(s => s.index === t.currentStageIndex) || t.stages?.[0];
+    const totalStages = t.stages?.length || 1;
+    const isLastStage = (t.currentStageIndex || 1) >= totalStages;
+    const topNText = currentStage?.topNToAdvance && !isLastStage ? `<br/><small class="text-muted">Top ${currentStage.topNToAdvance} thăng hạng</small>` : '';
+
+    let statusBadge = '<span class="badge badge-primary">Mở Nộp</span>';
+    if (t.status === 'RUNNING') statusBadge = '<span class="badge badge-warning">⚔️ Đang Đấu</span>';
+    else if (t.status === 'COMPLETED') statusBadge = '<span class="badge badge-success">🎉 Hoàn Thành</span>';
+    else if (t.status === 'PAUSED') statusBadge = '<span class="badge badge-secondary">⏸ Tạm Dừng</span>';
+
+    const regBadge = t.isOpenForRegistration
+      ? '<span class="badge badge-success">🔓 Đang Mở</span>'
+      : '<span class="badge badge-danger">🔒 Đã Khóa</span>';
+
+    const typeBadge = `<span class="tour-type-badge ${t.type === 'GLOBAL' ? 'type-global' : 'type-private'}">${t.type || 'GLOBAL'}</span>`;
+
+    return `
+      <tr data-tour-id="${t.id}">
+        <td>
+          <strong>${t.name}</strong>
+          <br/><small class="text-muted">ID: <code>${t.id}</code></small>
+        </td>
+        <td>${typeBadge}</td>
+        <td>
+          <strong>Vòng ${t.currentStageIndex || 1}/${totalStages}:</strong> ${currentStage?.name || 'Vòng Đấu'}
+          ${topNText}
+        </td>
+        <td style="text-align: center;"><strong>${t.bots?.length || 0}</strong></td>
+        <td style="text-align: center;"><strong>${t.matchesCount || 0}</strong></td>
+        <td>${statusBadge}</td>
+        <td>${regBadge}</td>
+        <td>
+          <div class="admin-table-actions">
+            <button type="button" class="btn btn-xs btn-primary btn-tour-run" data-tour-id="${t.id}" data-stage="${t.currentStageIndex || 1}" ${t.status === 'RUNNING' ? 'disabled' : ''} title="Kích hoạt chạy vòng đấu này">
+              ▶ Chạy Vòng ${t.currentStageIndex || 1}
+            </button>
+            ${!isLastStage ? `
+              <button type="button" class="btn btn-xs btn-warning btn-tour-advance" data-tour-id="${t.id}" title="Lọc Top N và chuyển sang vòng tiếp theo">
+                ⚖️ Chốt & Lọc Top N
+              </button>
+            ` : `
+              <button type="button" class="btn btn-xs btn-success btn-tour-finish" data-tour-id="${t.id}" ${t.status === 'COMPLETED' ? 'disabled' : ''} title="Kết thúc giải và vinh danh trao giải">
+                🎉 Trao Giải
+              </button>
+            `}
+            <button type="button" class="btn btn-xs btn-outline btn-tour-pause" data-tour-id="${t.id}">
+              ${t.status === 'PAUSED' ? '▶ Tiếp Tục' : '⏸ Tạm Dừng'}
+            </button>
+            <button type="button" class="btn btn-xs btn-outline btn-tour-reg" data-tour-id="${t.id}">
+              ${t.isOpenForRegistration ? '🔒 Khóa Nộp' : '🔓 Mở Nộp'}
+            </button>
+            <button type="button" class="btn btn-xs btn-danger btn-tour-delete" data-tour-id="${t.id}" title="Xóa giải đấu">
+              🗑️
+            </button>
+          </div>
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  // Gắn sự kiện cho các nút hành động trong bảng
+  tbody.querySelectorAll('.btn-tour-run').forEach(btn => {
+    btn.addEventListener('click', () => handleAdminRunStage(btn.dataset.tourId, Number(btn.dataset.stage)));
+  });
+  tbody.querySelectorAll('.btn-tour-advance').forEach(btn => {
+    btn.addEventListener('click', () => handleAdminAdvanceStage(btn.dataset.tourId));
+  });
+  tbody.querySelectorAll('.btn-tour-finish').forEach(btn => {
+    btn.addEventListener('click', () => handleAdminFinishTournament(btn.dataset.tourId));
+  });
+  tbody.querySelectorAll('.btn-tour-pause').forEach(btn => {
+    btn.addEventListener('click', () => handleAdminTogglePause(btn.dataset.tourId));
+  });
+  tbody.querySelectorAll('.btn-tour-reg').forEach(btn => {
+    btn.addEventListener('click', () => handleAdminToggleReg(btn.dataset.tourId));
+  });
+  tbody.querySelectorAll('.btn-tour-delete').forEach(btn => {
+    btn.addEventListener('click', () => handleAdminDeleteTournament(btn.dataset.tourId));
+  });
+}
+
+async function handleAdminRunStage(tourId, stageIndex) {
+  if (!AuthState.token || AuthState.user?.role !== 'admin') return;
+  if (!confirm(`Bạn có chắc chắn muốn KÍCH HOẠT CHẠY VÒNG ${stageIndex} cho giải đấu này? Hệ thống sẽ đấu vòng tròn Round-Robin theo từng batch 10 trận.`)) return;
+
+  try {
+    const res = await fetch(`/api/admin/tournaments/${tourId}/start-stage`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${AuthState.token}`
+      },
+      body: JSON.stringify({ stageIndex })
+    });
+    const data = await res.json();
+    if (res.ok && data.success) {
+      alert(`🚀 ${data.message}`);
+      if (data.progress) updateAdminProgressUI(data.progress);
+      fetchAdminAllTournaments();
+      fetchTournamentsList();
+      fetchLeaderboard();
+    } else {
+      alert('Lỗi: ' + (data.error || 'Không thể bắt đầu vòng đấu.'));
+    }
+  } catch (err) {
+    alert('Lỗi kết nối máy chủ: ' + err.message);
+  }
+}
+
+async function handleAdminAdvanceStage(tourId) {
+  if (!AuthState.token || AuthState.user?.role !== 'admin') return;
+  if (!confirm('Bạn có chắc chắn muốn CHỐT KẾT QUẢ VÀ LỌC TOP N bot để thăng hạng vào vòng tiếp theo?')) return;
+
+  try {
+    const res = await fetch(`/api/admin/tournaments/${tourId}/advance-stage`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${AuthState.token}` }
+    });
+    const data = await res.json();
+    if (res.ok && data.success) {
+      alert(`🎉 ${data.message}\nSố bot thăng hạng: ${data.advancedBots?.length || 0}`);
+      fetchAdminAllTournaments();
+      fetchTournamentsList();
+      fetchLeaderboard();
+    } else {
+      alert('Lỗi: ' + (data.error || 'Không thể thăng hạng vòng tiếp theo.'));
+    }
+  } catch (err) {
+    alert('Lỗi kết nối máy chủ: ' + err.message);
+  }
+}
+
+async function handleAdminFinishTournament(tourId) {
+  if (!AuthState.token || AuthState.user?.role !== 'admin') return;
+  if (!confirm('Xác nhận KẾT THÚC GIẢI ĐẤU và công bố cơ cấu trao giải cho các nhà vô địch?')) return;
+
+  try {
+    const res = await fetch(`/api/admin/tournaments/${tourId}/finish`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${AuthState.token}` }
+    });
+    const data = await res.json();
+    if (res.ok && data.success) {
+      alert(`🏆 ${data.message}`);
+      fetchAdminAllTournaments();
+      fetchTournamentsList();
+      fetchLeaderboard();
+    } else {
+      alert('Lỗi: ' + (data.error || 'Không thể kết thúc giải đấu.'));
+    }
+  } catch (err) {
+    alert('Lỗi kết nối máy chủ: ' + err.message);
+  }
+}
+
+async function handleAdminTogglePause(tourId) {
+  if (!AuthState.token || AuthState.user?.role !== 'admin') return;
+
+  try {
+    const res = await fetch(`/api/admin/tournaments/${tourId}/toggle-pause`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${AuthState.token}` }
+    });
+    const data = await res.json();
+    if (res.ok && data.success) {
+      alert(data.message);
+      fetchAdminAllTournaments();
+      fetchTournamentsList();
+    }
+  } catch (err) {
+    alert('Lỗi kết nối máy chủ: ' + err.message);
+  }
+}
+
+async function handleAdminToggleReg(tourId) {
+  if (!AuthState.token || AuthState.user?.role !== 'admin') return;
+
+  try {
+    const res = await fetch(`/api/admin/tournaments/${tourId}/toggle-registration`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${AuthState.token}` }
+    });
+    const data = await res.json();
+    if (res.ok && data.success) {
+      alert(data.message);
+      fetchAdminAllTournaments();
+      fetchTournamentsList();
+    }
+  } catch (err) {
+    alert('Lỗi kết nối máy chủ: ' + err.message);
+  }
+}
+
+async function handleAdminDeleteTournament(tourId) {
+  if (!AuthState.token || AuthState.user?.role !== 'admin') return;
+  if (!confirm(`Bạn có chắc chắn muốn XÓA vĩnh viễn giải/phòng [${tourId}]? Hành động này không thể hoàn tác.`)) return;
+
+  try {
+    const res = await fetch(`/api/admin/tournaments/${tourId}/delete`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${AuthState.token}` }
+    });
+    const data = await res.json();
+    if (res.ok && data.success) {
+      alert(`🗑️ ${data.message}`);
+      fetchAdminAllTournaments();
+      fetchTournamentsList();
+      fetchLeaderboard();
+    } else {
+      alert('Lỗi: ' + (data.error || 'Không thể xóa giải đấu.'));
+    }
+  } catch (err) {
+    alert('Lỗi kết nối máy chủ: ' + err.message);
+  }
+}
+
+// Cập nhật các thẻ tóm tắt trên Admin Dashboard
 function renderAdminDashboardData() {
   const ts = TournamentClientState;
+  const currentTour = ts.tournaments?.find(t => t.id === ts.selectedTournamentId) || ts;
 
-  // Stats
   const statBots = document.getElementById('adminStatTotalBots');
   const statStatus = document.getElementById('adminStatTourStatus');
   const statReg = document.getElementById('adminStatRegDoor');
-  const execBots = document.getElementById('adminExecBotCount');
 
-  if (statBots) statBots.innerText = `${ts.totalEligibleBots || 0} bot`;
-  if (execBots) execBots.innerText = `${ts.totalEligibleBots || 0} bot`;
-  if (statStatus) statStatus.innerText = ts.status || 'REGISTRATION';
+  if (statBots) statBots.innerText = `${currentTour.bots?.length || currentTour.totalEligibleBots || 0} bot`;
+  if (statStatus) statStatus.innerText = currentTour.status || 'REGISTRATION';
   if (statReg) {
-    statReg.innerText = ts.isOpenForRegistration ? 'ĐANG MỞ' : 'ĐÃ KHÓA';
-    statReg.style.color = ts.isOpenForRegistration ? '#4ade80' : '#f87171';
+    statReg.innerText = currentTour.isOpenForRegistration ? 'ĐANG MỞ' : 'ĐÃ KHÓA';
+    statReg.style.color = currentTour.isOpenForRegistration ? '#4ade80' : '#f87171';
   }
 
-  // Inputs
-  const toLocalISO = (dStr) => {
-    if (!dStr) return '';
-    const d = new Date(dStr);
-    if (isNaN(d.getTime())) return '';
-    const offset = d.getTimezoneOffset() * 60000;
-    return new Date(d.getTime() - offset).toISOString().slice(0, 16);
-  };
+  fetchAdminAutoQueueStatus();
+}
 
-  const regStartInput = document.getElementById('adminRegStart');
-  const regEndInput = document.getElementById('adminRegEnd');
-  const tourStartInput = document.getElementById('adminTourStart');
-  const statusSelect = document.getElementById('adminTourStatusSelect');
-
-  if (regStartInput && !regStartInput.matches(':focus')) regStartInput.value = toLocalISO(ts.registrationStart);
-  if (regEndInput && !regEndInput.matches(':focus')) regEndInput.value = toLocalISO(ts.registrationEnd);
-  if (tourStartInput && !tourStartInput.matches(':focus')) tourStartInput.value = toLocalISO(ts.tournamentStart);
-  if (statusSelect && !statusSelect.matches(':focus')) statusSelect.value = ts.status || 'REGISTRATION';
-
-  // Toggle buttons
-  const btnToggleReg = document.getElementById('btnAdminToggleReg');
-  if (btnToggleReg) {
-    btnToggleReg.innerHTML = ts.isOpenForRegistration
-      ? '<span class="icon">🔒</span> Khóa Cổng Nộp Bot'
-      : '<span class="icon">🔓</span> Mở Cổng Nộp Bot';
+async function fetchAdminAutoQueueStatus() {
+  try {
+    const res = await fetch('/api/admin/auto-queue');
+    if (!res.ok) return;
+    const json = await res.json();
+    if (json.success) {
+      updateAutoQueueUI(json.isAutoQueueEnabled);
+    }
+  } catch (e) {
+    console.warn('[Admin] Lỗi lấy trạng thái Auto-Queue:', e);
   }
+}
 
-  const btnToggleAnnounce = document.getElementById('btnAdminToggleAnnounce');
-  if (btnToggleAnnounce) {
-    btnToggleAnnounce.innerHTML = ts.isPrizeAnnounced
-      ? '<span class="icon">🙈</span> Ẩn Công Bố Giải Thưởng'
-      : '<span class="icon">📢</span> Công Bố Trao Giải';
+function updateAutoQueueUI(isEnabled) {
+  const statEl = document.getElementById('adminStatAutoQueue');
+  if (statEl) {
+    statEl.innerText = isEnabled ? 'BẬT (ON)' : 'TẮT (OFF)';
+    statEl.style.color = isEnabled ? '#10b981' : '#ef4444';
   }
+}
 
-  // Progress bar
-  if (ts.tournamentProgress) {
-    updateAdminProgressUI(ts.tournamentProgress);
+async function handleAdminToggleAutoQueue() {
+  if (!AuthState.token || AuthState.user?.role !== 'admin') {
+    alert('Vui lòng đăng nhập tài khoản Quản trị viên (Admin)!');
+    return;
   }
+  try {
+    const res = await fetch('/api/admin/auto-queue', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${AuthState.token}`
+      }
+    });
+    const json = await res.json();
+    if (json.success) {
+      updateAutoQueueUI(json.isAutoQueueEnabled);
+      alert(json.message);
+    } else {
+      alert(json.error || 'Lỗi khi cập nhật Auto-Queue');
+    }
+  } catch (err) {
+    console.error('Lỗi toggle auto-queue:', err);
+    alert('Không thể kết nối đến máy chủ.');
+  }
+}
 
-  // Table giải thưởng
-  renderAdminPrizesTable();
+async function handleAdminTriggerAutoQueue() {
+  if (!AuthState.token || AuthState.user?.role !== 'admin') {
+    alert('Vui lòng đăng nhập tài khoản Quản trị viên (Admin)!');
+    return;
+  }
+  if (!confirm('Hệ thống sẽ quét toàn bộ các cặp bot chưa từng đối đầu nhau và đẩy vào hàng chờ thi đấu (Single Round-Robin C_n^2). Bạn có muốn tiếp tục?')) return;
+  try {
+    const res = await fetch('/api/admin/auto-queue/trigger', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${AuthState.token}`
+      },
+      body: JSON.stringify({
+        roomId: TournamentClientState.selectedRoomId || 'PUBLIC',
+        tournamentId: TournamentClientState.selectedTournamentId || null
+      })
+    });
+    const json = await res.json();
+    if (json.success) {
+      alert(json.message);
+      fetchLeaderboard();
+    } else {
+      alert(json.error || 'Lỗi khi kích hoạt ghép đấu');
+    }
+  } catch (err) {
+    console.error('Lỗi trigger unplayed matches:', err);
+  }
 }
 
 function updateAdminProgressUI(progress) {
-  const badge = document.getElementById('adminProgressBadge');
+  const badge = document.getElementById('adminLiveProgressBadge') || document.getElementById('adminProgressBadge');
   const fill = document.getElementById('adminProgressBarFill');
   const percent = document.getElementById('adminProgressPercent');
   const text = document.getElementById('adminProgressText');
+  const tourName = document.getElementById('adminExecTourName');
+  const stageName = document.getElementById('adminExecStageName');
+  const matchesText = document.getElementById('adminExecMatchesText');
 
   if (!progress) return;
 
   if (fill) fill.style.width = `${progress.percentage || 0}%`;
   if (percent) percent.innerText = `${progress.percentage || 0}%`;
-  if (text) text.innerText = progress.statusText || 'Sẵn sàng';
+  if (text) text.innerText = progress.statusText || 'Hệ thống sẵn sàng';
+
+  if (tourName) tourName.innerText = progress.tournamentName || 'Giải Toàn Cầu';
+  if (stageName) stageName.innerText = `Vòng ${progress.stageIndex || 1}: ${progress.stageName || ''}`;
+  if (matchesText) matchesText.innerText = `${progress.completedMatches || 0} / ${progress.totalMatches || 0} trận`;
 
   if (badge) {
     if (progress.isRunning) {
@@ -566,49 +1016,75 @@ function updateAdminProgressUI(progress) {
   }
 }
 
-function renderAdminPrizesTable() {
-  const tbody = document.getElementById('adminPrizesTableBody');
-  if (!tbody || tbody.dataset.userEditing === 'true') return;
+// ============================================================================
+// KHỞI TẠO CẤU HÌNH VÒNG ĐẤU VÀ GIẢI THƯỞNG CHO CREATOR
+// ============================================================================
 
-  const prizes = TournamentClientState.prizes || [];
-  tbody.innerHTML = '';
+function renderStagesConfig(count) {
+  const container = document.getElementById('newTourStagesContainer');
+  if (!container) return;
 
-  prizes.forEach((p, idx) => {
-    const tr = document.createElement('tr');
-    tr.dataset.prizeId = p.id || `prize_${idx}`;
-    tr.innerHTML = `
-      <td><input type="number" class="form-control prize-rank" value="${p.rank || (idx + 1)}" min="1" /></td>
-      <td><input type="text" class="form-control prize-badge" value="${p.badge || '🏆'}" style="text-align: center;" /></td>
-      <td><input type="text" class="form-control prize-title" value="${p.title || ''}" placeholder="Tên danh hiệu..." /></td>
-      <td><input type="text" class="form-control prize-reward" value="${p.reward || ''}" placeholder="Cúp, tiền mặt, hiện vật..." /></td>
-      <td style="text-align: center;">
-        <button type="button" class="btn btn-xs btn-outline btn-del-prize" title="Xóa mức giải">🗑️</button>
-      </td>
+  const n = Math.min(5, Math.max(1, Number(count) || 1));
+  const presets = {
+    1: [{ name: 'Vòng Tròn Tính Điểm', topN: 0 }],
+    2: [{ name: 'Vòng Bảng', topN: 8 }, { name: 'Chung Kết', topN: 0 }],
+    3: [{ name: 'Vòng Bảng', topN: 16 }, { name: 'Bán Kết', topN: 4 }, { name: 'Chung Kết', topN: 0 }],
+    4: [{ name: 'Vòng 1', topN: 32 }, { name: 'Tứ Kết', topN: 8 }, { name: 'Bán Kết', topN: 4 }, { name: 'Chung Kết', topN: 0 }],
+    5: [{ name: 'Giai Đoạn 1', topN: 64 }, { name: 'Giai Đoạn 2', topN: 32 }, { name: 'Giai Đoạn 3', topN: 16 }, { name: 'Bán Kết', topN: 4 }, { name: 'Chung Kết', topN: 0 }]
+  };
+
+  const stageList = presets[n] || presets[3];
+
+  container.innerHTML = stageList.map((s, idx) => {
+    const stageNum = idx + 1;
+    const isFinal = stageNum === n;
+
+    return `
+      <div class="stage-config-row" data-stage-idx="${stageNum}">
+        <span class="stage-num-badge">Vòng ${stageNum}</span>
+        <div class="stage-inputs">
+          <input type="text" class="form-control stage-name-input" value="${s.name}" placeholder="Tên vòng..." required />
+          ${isFinal ? `
+            <span class="badge badge-success stage-final-badge">🏆 Vòng Chung Kết</span>
+          ` : `
+            <div class="topn-input-group">
+              <label>Top N:</label>
+              <input type="number" class="form-control stage-topn-input" value="${s.topN || 8}" min="1" max="128" />
+            </div>
+          `}
+        </div>
+      </div>
     `;
-    tbody.appendChild(tr);
-  });
-
-  tbody.querySelectorAll('.btn-del-prize').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      e.target.closest('tr')?.remove();
-    });
-  });
+  }).join('');
 }
 
-function addAdminPrizeRow() {
-  const tbody = document.getElementById('adminPrizesTableBody');
+function renderDefaultNewTourPrizes() {
+  const tbody = document.getElementById('newTourPrizesTableBody');
+  if (!tbody) return;
+
+  const defaults = [
+    { rank: 1, badge: '🥇', title: 'Quán Quân Grand Prix', reward: 'Cúp Vô Địch + 5.000.000 VNĐ' },
+    { rank: 2, badge: '🥈', title: 'Á Quân Grand Prix', reward: 'Huy Chương Bạc + 2.000.000 VNĐ' },
+    { rank: 3, badge: '🥉', title: 'Quý Quân Grand Prix', reward: 'Huy Chương Đồng + 1.000.000 VNĐ' }
+  ];
+
+  tbody.innerHTML = '';
+  defaults.forEach(p => addNewTourPrizeRow(p));
+}
+
+function addNewTourPrizeRow(data = {}) {
+  const tbody = document.getElementById('newTourPrizesTableBody');
   if (!tbody) return;
 
   const count = tbody.querySelectorAll('tr').length + 1;
   const tr = document.createElement('tr');
-  tr.dataset.prizeId = `prize_new_${Date.now()}`;
   tr.innerHTML = `
-    <td><input type="number" class="form-control prize-rank" value="${count}" min="1" /></td>
-    <td><input type="text" class="form-control prize-badge" value="✨" style="text-align: center;" /></td>
-    <td><input type="text" class="form-control prize-title" value="Giải Khuyến Khích ${count}" /></td>
-    <td><input type="text" class="form-control prize-reward" value="" placeholder="Ví dụ: Kỷ Niệm Chương + 50.000 VNĐ" /></td>
+    <td><input type="number" class="form-control prize-rank" value="${data.rank || count}" min="1" /></td>
+    <td><input type="text" class="form-control prize-badge" value="${data.badge || '✨'}" style="text-align: center;" /></td>
+    <td><input type="text" class="form-control prize-title" value="${data.title || `Giải Khuyến Khích ${count}`}" /></td>
+    <td><input type="text" class="form-control prize-reward" value="${data.reward || ''}" placeholder="Cúp, hiện vật, tiền mặt..." /></td>
     <td style="text-align: center;">
-      <button type="button" class="btn btn-xs btn-outline btn-del-prize">🗑️</button>
+      <button type="button" class="btn btn-xs btn-outline btn-del-prize" title="Xóa mức giải">🗑️</button>
     </td>
   `;
   tbody.appendChild(tr);
@@ -616,167 +1092,78 @@ function addAdminPrizeRow() {
   tr.querySelector('.btn-del-prize')?.addEventListener('click', () => tr.remove());
 }
 
-async function handleAdminSaveSchedule() {
-  if (!AuthState.token || AuthState.user?.role !== 'admin') return;
+async function handleCreateTournamentSubmit(e) {
+  if (e) e.preventDefault();
+  if (!AuthState.token || AuthState.user?.role !== 'admin') {
+    alert('Vui lòng đăng nhập với quyền Admin.');
+    return;
+  }
 
-  const regStart = document.getElementById('adminRegStart')?.value;
-  const regEnd = document.getElementById('adminRegEnd')?.value;
-  const tourStart = document.getElementById('adminTourStart')?.value;
-  const status = document.getElementById('adminTourStatusSelect')?.value;
+  const name = document.getElementById('newTourName')?.value.trim();
+  const description = document.getElementById('newTourDesc')?.value.trim();
+  const regStart = document.getElementById('newTourRegStart')?.value;
+  const regEnd = document.getElementById('newTourRegEnd')?.value;
+  const stagesCount = Number(document.getElementById('newTourStagesCount')?.value) || 3;
+
+  if (!name) {
+    alert('Vui lòng nhập tên giải đấu!');
+    return;
+  }
+
+  // Thu thập cấu hình các vòng
+  const stageRows = document.querySelectorAll('#newTourStagesContainer .stage-config-row');
+  const stages = [];
+  stageRows.forEach((row, idx) => {
+    const sIdx = idx + 1;
+    const sName = row.querySelector('.stage-name-input')?.value.trim() || `Vòng ${sIdx}`;
+    const topN = row.querySelector('.stage-topn-input') ? Number(row.querySelector('.stage-topn-input').value) || 0 : 0;
+    stages.push({
+      index: sIdx,
+      name: sName,
+      status: sIdx === 1 ? 'RUNNING' : 'PENDING',
+      topNToAdvance: topN
+    });
+  });
+
+  // Thu thập cấu hình giải thưởng
+  const prizeRows = document.querySelectorAll('#newTourPrizesTableBody tr');
+  const prizes = [];
+  prizeRows.forEach((row, idx) => {
+    const rank = Number(row.querySelector('.prize-rank')?.value) || (idx + 1);
+    const badge = row.querySelector('.prize-badge')?.value || '🏆';
+    const title = row.querySelector('.prize-title')?.value || `Hạng ${rank}`;
+    const reward = row.querySelector('.prize-reward')?.value || '';
+    prizes.push({ id: `prize_${idx + 1}`, rank, badge, title, reward });
+  });
 
   try {
-    const res = await fetch('/api/admin/tournament/schedule', {
+    const res = await fetch('/api/admin/tournaments', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${AuthState.token}`
       },
       body: JSON.stringify({
+        name,
+        description,
         registrationStart: regStart ? new Date(regStart).toISOString() : null,
         registrationEnd: regEnd ? new Date(regEnd).toISOString() : null,
-        tournamentStart: tourStart ? new Date(tourStart).toISOString() : null,
-        status
+        stagesCount,
+        stages,
+        prizes,
+        type: 'GLOBAL'
       })
     });
     const data = await res.json();
     if (res.ok && data.success) {
-      alert('Đã lưu cấu hình lịch trình giải đấu thành công!');
-      fetchTournamentStatus();
+      alert(`✨ Đã tạo giải đấu "${name}" thành công!`);
+      document.getElementById('createTournamentForm')?.reset();
+      renderStagesConfig(3);
+      renderDefaultNewTourPrizes();
+      fetchAdminAllTournaments();
+      fetchTournamentsList();
     } else {
-      alert('Lỗi: ' + (data.error || 'Không thể lưu lịch trình.'));
-    }
-  } catch (err) {
-    alert('Lỗi kết nối máy chủ: ' + err.message);
-  }
-}
-
-async function handleAdminToggleReg() {
-  if (!AuthState.token || AuthState.user?.role !== 'admin') return;
-
-  try {
-    const res = await fetch('/api/admin/tournament/toggle-registration', {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${AuthState.token}` }
-    });
-    const data = await res.json();
-    if (res.ok && data.success) {
-      alert(data.message);
-      fetchTournamentStatus();
-    }
-  } catch (err) {
-    alert('Lỗi kết nối máy chủ: ' + err.message);
-  }
-}
-
-async function handleAdminStartNow() {
-  if (!AuthState.token || AuthState.user?.role !== 'admin') return;
-  if (!confirm('Bạn có chắc chắn muốn BẮT ĐẦU GIẢI ĐẤU NGAY LẬP TỨC?')) return;
-
-  try {
-    // 1. Cập nhật status sang RUNNING
-    await fetch('/api/admin/tournament/schedule', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${AuthState.token}`
-      },
-      body: JSON.stringify({ status: 'RUNNING' })
-    });
-    // 2. Chạy giải đấu
-    handleAdminRunTournament();
-  } catch (err) {
-    alert('Lỗi: ' + err.message);
-  }
-}
-
-async function handleAdminRunTournament() {
-  if (!AuthState.token || AuthState.user?.role !== 'admin') return;
-  if (!confirm('Kích hoạt chạy TOÀN BỘ GIẢI ĐẤU (Round-Robin Matchmaking)? Tất cả bot sẽ đấu xoay vòng 2 lượt đi/về theo từng batch 10 trận.')) return;
-
-  try {
-    const res = await fetch('/api/admin/tournament/run-all', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${AuthState.token}`
-      },
-      body: JSON.stringify({ resetScores: true })
-    });
-    const data = await res.json();
-    if (res.ok && data.success) {
-      alert(`🚀 ${data.message}`);
-      if (data.progress) {
-        updateAdminProgressUI(data.progress);
-      }
-    } else {
-      alert('Lỗi: ' + (data.error || 'Không thể chạy giải đấu.'));
-    }
-  } catch (err) {
-    alert('Lỗi kết nối máy chủ: ' + err.message);
-  }
-}
-
-async function handleAdminSavePrizes() {
-  if (!AuthState.token || AuthState.user?.role !== 'admin') return;
-  const tbody = document.getElementById('adminPrizesTableBody');
-  if (!tbody) return;
-
-  const rows = tbody.querySelectorAll('tr');
-  const prizes = [];
-
-  rows.forEach((row, idx) => {
-    const rank = row.querySelector('.prize-rank')?.value || (idx + 1);
-    const badge = row.querySelector('.prize-badge')?.value || '🏆';
-    const title = row.querySelector('.prize-title')?.value || `Hạng ${idx + 1}`;
-    const reward = row.querySelector('.prize-reward')?.value || '';
-
-    prizes.push({
-      id: row.dataset.prizeId || `prize_${idx}`,
-      rank: Number(rank),
-      badge,
-      title,
-      reward
-    });
-  });
-
-  try {
-    const res = await fetch('/api/admin/tournament/prizes', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${AuthState.token}`
-      },
-      body: JSON.stringify({ prizes })
-    });
-    const data = await res.json();
-    if (res.ok && data.success) {
-      alert('Đã lưu cấu hình giải thưởng thành công!');
-      fetchTournamentStatus();
-    } else {
-      alert('Lỗi: ' + (data.error || 'Không thể lưu giải thưởng.'));
-    }
-  } catch (err) {
-    alert('Lỗi kết nối máy chủ: ' + err.message);
-  }
-}
-
-async function handleAdminToggleAnnounce() {
-  if (!AuthState.token || AuthState.user?.role !== 'admin') return;
-
-  try {
-    const res = await fetch('/api/admin/tournament/announce-prizes', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${AuthState.token}`
-      },
-      body: JSON.stringify({ isPrizeAnnounced: !TournamentClientState.isPrizeAnnounced })
-    });
-    const data = await res.json();
-    if (res.ok && data.success) {
-      alert(data.message);
-      fetchTournamentStatus();
-      fetchLeaderboard();
+      alert('Lỗi: ' + (data.error || 'Không thể tạo giải đấu.'));
     }
   } catch (err) {
     alert('Lỗi kết nối máy chủ: ' + err.message);
@@ -790,15 +1177,18 @@ function setupSSE() {
       fetchLeaderboard();
     });
     eventSource.addEventListener('tournament_updated', () => {
-      fetchTournamentStatus();
+      fetchTournamentsList();
       fetchLeaderboard();
+      if (AuthState.user?.role === 'admin') {
+        fetchAdminAllTournaments();
+      }
     });
     eventSource.addEventListener('tournament_started', (e) => {
       try {
         const prog = JSON.parse(e.data);
         updateAdminProgressUI(prog);
       } catch (err) {}
-      fetchTournamentStatus();
+      fetchTournamentsList();
     });
     eventSource.addEventListener('tournament_progress', (e) => {
       try {
@@ -811,8 +1201,17 @@ function setupSSE() {
         const prog = JSON.parse(e.data);
         updateAdminProgressUI(prog);
       } catch (err) {}
-      fetchTournamentStatus();
+      fetchTournamentsList();
       fetchLeaderboard();
+      if (AuthState.user?.role === 'admin') {
+        fetchAdminAllTournaments();
+      }
+    });
+    eventSource.addEventListener('auto_queue_updated', (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        updateAutoQueueUI(data.isAutoQueueEnabled);
+      } catch (err) {}
     });
   } catch (e) {
     console.warn('[SSE] Không thể mở kết nối SSE:', e.message);
@@ -1068,29 +1467,33 @@ function updateQueueCard(isBatchRunning, queueLength) {
   const desc = document.getElementById('queueStatusDesc');
   const statusLabel = document.getElementById('statusLabel');
 
-  card.classList.remove('running', 'queued');
+  if (card) {
+    card.classList.remove('running', 'queued');
 
-  if (isBatchRunning) {
-    card.classList.add('running');
-    title.innerText = 'Đang Thi Đấu (Batch Running)...';
-    desc.innerText = `Đang mô phỏng các cặp đấu trong batch... (Hàng đợi còn: ${queueLength} bot)`;
-    statusLabel.innerText = 'Đang thi đấu...';
-  } else if (queueLength > 0) {
-    card.classList.add('queued');
-    title.innerText = 'Đang Chờ Xếp Trận (Batch)';
-    desc.innerText = `Có ${queueLength} bot trong hàng đợi chờ chạy batch kế tiếp...`;
-    statusLabel.innerText = 'Chờ xếp trận';
-  } else {
-    title.innerText = 'Đã Cập Nhật Kết Quả';
-    desc.innerText = 'Hàng đợi trống. Các trận đấu của đợt này đã hoàn tất!';
-    statusLabel.innerText = 'Sẵn sàng';
+    if (isBatchRunning) {
+      card.classList.add('running');
+      if (title) title.innerText = 'Đang Thi Đấu (Batch Running)...';
+      if (desc) desc.innerText = `Đang mô phỏng các cặp đấu trong batch... (Hàng đợi còn: ${queueLength} bot)`;
+      if (statusLabel) statusLabel.innerText = 'Đang thi đấu...';
+    } else if (queueLength > 0) {
+      card.classList.add('queued');
+      if (title) title.innerText = 'Đang Chờ Xếp Trận (Batch)';
+      if (desc) desc.innerText = `Có ${queueLength} bot trong hàng đợi chờ chạy batch kế tiếp...`;
+      if (statusLabel) statusLabel.innerText = 'Chờ xếp trận';
+    } else {
+      if (title) title.innerText = 'Đã Cập Nhật Kết Quả';
+      if (desc) desc.innerText = 'Hàng đợi trống. Các trận đấu của đợt này đã hoàn tất!';
+      if (statusLabel) statusLabel.innerText = 'Sẵn sàng';
+    }
   }
 }
 
 // Lấy Bảng xếp hạng và các trận đấu gần đây từ server
 async function fetchLeaderboard() {
   try {
-    const res = await fetch(`/api/leaderboard?roomId=${AppState.currentRoomId}`);
+    const tourId = TournamentClientState.selectedTournamentId || '';
+    const stageIdx = TournamentClientState.selectedStageIndex || 1;
+    const res = await fetch(`/api/leaderboard?roomId=${encodeURIComponent(AppState.currentRoomId)}&tournamentId=${encodeURIComponent(tourId)}&stageIndex=${encodeURIComponent(stageIdx)}`);
     if (!res.ok) return;
 
     const data = await res.json();
@@ -1107,12 +1510,17 @@ async function fetchLeaderboard() {
 // Render Bảng điểm Leaderboard
 function renderLeaderboardTable(leaderboard, recentMatches = []) {
   const tbody = document.getElementById('leaderboardTbody');
+  if (!tbody) return;
   tbody.innerHTML = '';
 
   if (!leaderboard || leaderboard.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="7" class="empty-cell">Chưa có bot nào trong phòng này</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="7" class="empty-cell">Chưa có bot nào tham gia</td></tr>`;
     return;
   }
+
+  const currentTour = TournamentClientState.tournaments?.find(t => t.id === TournamentClientState.selectedTournamentId) || TournamentClientState;
+  const tourPrizes = currentTour.prizes || [];
+  const isPrizesAnnounced = currentTour.isPrizeAnnounced;
 
   leaderboard.forEach((item, index) => {
     const tr = document.createElement('tr');
@@ -1146,8 +1554,8 @@ function renderLeaderboardTable(leaderboard, recentMatches = []) {
       (Array.isArray(recentMatches) && recentMatches.length > 0 ? recentMatches[0].id : null);
 
     let prizeTag = '';
-    if (TournamentClientState.isPrizeAnnounced && Array.isArray(TournamentClientState.prizes)) {
-      const prize = TournamentClientState.prizes.find(p => Number(p.rank) === (index + 1));
+    if (isPrizesAnnounced && Array.isArray(tourPrizes)) {
+      const prize = tourPrizes.find(p => Number(p.rank) === (index + 1));
       if (prize) {
         let rankClass = 'lb-prize-rank-other';
         if (index === 0) rankClass = 'lb-prize-rank-1';
@@ -1216,60 +1624,75 @@ function renderRecentMatchesList(matches) {
 
 // Nộp / Cập nhật code bot lên Server
 async function handleSubmitBot() {
-  const nameEl = document.getElementById('bot-name') || document.getElementById('botNameInput');
-  const authorEl = document.getElementById('bot-author') || document.getElementById('playerNameInput');
+  if (!AuthState.user || !AuthState.token) {
+    alert('⚠️ Vui lòng Đăng Nhập hoặc Đăng Ký tài khoản để nộp bot thi đấu!');
+    openAuthModal('login');
+    return;
+  }
+
+  const nameEl = document.getElementById('input-bot-name') || document.getElementById('bot-name') || document.getElementById('botNameInput');
   const codeEl = document.getElementById('bot-code') || document.getElementById('botCodeEditor');
   const langEl = document.getElementById('languageSelect');
+  const anonCheck = document.getElementById('anonymousCheckbox');
 
   const botName = nameEl ? nameEl.value.trim() : 'CyberWarrior';
-  const playerName = authorEl ? authorEl.value.trim() : 'Player';
   const language = langEl ? langEl.value : 'javascript';
   const botCode = codeEl ? codeEl.value.trim() : '';
+  const isAnonymous = !!anonCheck?.checked;
 
   if (!botCode) {
     alert('Vui lòng không để trống mã nguồn bot!');
     return;
   }
 
-  const submitBtn = document.getElementById('submitBotBtn');
+  const submitBtn = document.getElementById('btn-submit-bot') || document.getElementById('submitBotBtn');
   if (submitBtn) {
     submitBtn.disabled = true;
     submitBtn.innerText = 'Đang gửi lên server...';
   }
 
   try {
-    const headers = { 'Content-Type': 'application/json' };
-    if (AuthState.token) {
-      headers['Authorization'] = `Bearer ${AuthState.token}`;
-    }
+    const headers = {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${AuthState.token}`
+    };
 
-    const effectiveAuthor = playerName || (AuthState.user ? AuthState.user.username : 'Player');
+    const submitSel = document.getElementById('submitTournamentSelect');
+    const selectedTourId = submitSel?.value || TournamentClientState.selectedTournamentId || 'tournament_global_primary';
 
     const res = await fetch('/api/bot/submit', {
       method: 'POST',
       headers,
       body: JSON.stringify({
-        playerId: AppState.playerId,
         botName: botName || 'CyberWarrior',
-        playerName: effectiveAuthor,
-        author: effectiveAuthor,
         language: language,
         botCode: botCode,
-        roomId: AppState.currentRoomId
+        isAnonymous: isAnonymous,
+        roomId: AppState.currentRoomId,
+        tournamentId: selectedTourId
       })
     });
 
     const data = await res.json();
+    if (res.status === 401) {
+      alert('⚠️ ' + (data.message || data.error || 'Phiên làm việc đã hết hạn. Vui lòng đăng nhập lại!'));
+      openAuthModal('login');
+      return;
+    }
     if (res.status === 403) {
       alert('⚠️ ' + (data.error || 'Cổng nộp bot hiện đang đóng!'));
       return;
     }
     if (data.success) {
+      if (data.data?.id) {
+        AppState.playerId = data.data.id;
+      }
       updateQueueCard(false, data.data.queuePosition);
       fetchLeaderboard();
-      console.log('✅ [UI] Nộp bot thành công:', data.data);
+      console.log('✅ [UI] Nộp/cập nhật bot thành công:', data.data);
+      alert('🎉 ' + (data.message || (data.isUpdate ? 'Cập nhật code bot thành công!' : 'Nộp bot thành công!')));
     } else {
-      alert('Lỗi nộp bot: ' + data.error);
+      alert('Lỗi nộp bot: ' + (data.error || data.message || 'Không thể lưu bot.'));
     }
   } catch (err) {
     alert('Không thể kết nối đến server: ' + err.message);
@@ -1329,8 +1752,8 @@ function loadLanguageTemplate(lang) {
 export function loadSampleBot(botKey) {
   const key = (botKey || 'random').toLowerCase();
   const codeEl = document.getElementById('bot-code') || document.getElementById('botCodeEditor');
-  const nameEl = document.getElementById('bot-name') || document.getElementById('botNameInput');
-  const authorEl = document.getElementById('bot-author') || document.getElementById('playerNameInput');
+  const nameEl = document.getElementById('input-bot-name') || document.getElementById('bot-name') || document.getElementById('botNameInput');
+  const authorEl = document.getElementById('input-author') || document.getElementById('bot-author') || document.getElementById('playerNameInput');
   const langSelect = document.getElementById('languageSelect');
 
   if (!codeEl) {
@@ -2253,9 +2676,37 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // 5. Nộp Bot
-  const submitBtn = document.getElementById('submitBotBtn');
+  const submitBtn = document.getElementById('btn-submit-bot') || document.getElementById('submitBotBtn');
   if (submitBtn) {
     submitBtn.addEventListener('click', handleSubmitBot);
+  }
+
+  // Nút mở Login từ banner yêu cầu đăng nhập ở Form nộp bot
+  const btnOpenLoginFromSubmit = document.getElementById('btnOpenLoginFromSubmit');
+  if (btnOpenLoginFromSubmit) {
+    btnOpenLoginFromSubmit.addEventListener('click', () => openAuthModal('login'));
+  }
+
+  // Toggle Checkbox Ẩn danh
+  const anonCheck = document.getElementById('anonymousCheckbox');
+  if (anonCheck) {
+    anonCheck.addEventListener('change', () => {
+      const authorInput = document.getElementById('input-author') || document.getElementById('bot-author');
+      if (!authorInput) return;
+      if (!AuthState.user) {
+        authorInput.value = 'Chưa đăng nhập (Vui lòng đăng nhập)';
+        return;
+      }
+      if (anonCheck.checked) {
+        authorInput.value = 'Ẩn danh (Private Player)';
+        authorInput.style.opacity = '0.65';
+        authorInput.style.fontStyle = 'italic';
+      } else {
+        authorInput.value = AuthState.user.username;
+        authorInput.style.opacity = '1';
+        authorInput.style.fontStyle = 'normal';
+      }
+    });
   }
 
   // 6. Chọn / Tạo phòng
@@ -2490,6 +2941,7 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
       }
       renderAdminDashboardData();
+      fetchAdminAllTournaments();
     }
 
     // Tạm dừng mô phỏng Bot vs Bot nếu rời khỏi tab Sandbox
@@ -2528,6 +2980,11 @@ document.addEventListener('DOMContentLoaded', () => {
       renderManualBoard();
     }
 
+    // Nếu chuyển sang tab Nộp Code Bot, cập nhật giao diện Auth & Banner
+    if (viewId === 'view-submit') {
+      updateAuthUI();
+    }
+
     console.log(`🧭 [Navigation] Chuyển sang View: ${viewId}`);
   }
 
@@ -2555,18 +3012,18 @@ document.addEventListener('DOMContentLoaded', () => {
     btnCtaLeaderboard.addEventListener('click', () => switchTab('view-leaderboard'));
   }
 
-  // 9. Đổi Theme Sáng / Tối
+  // 9. Đổi Theme Sáng / Tối (Hỗ trợ toàn bộ class theme tương phản cao)
   const themeToggleBtn = document.getElementById('themeToggleBtn');
   const themeIcon = document.getElementById('themeIcon');
   if (themeToggleBtn && themeIcon) {
     themeToggleBtn.addEventListener('click', () => {
       if (AppState.theme === 'dark') {
         document.body.classList.remove('theme-dark');
-        document.body.classList.add('theme-light');
+        document.body.classList.add('theme-light', 'light-theme', 'light-mode');
         AppState.theme = 'light';
         themeIcon.innerText = '🌙';
       } else {
-        document.body.classList.remove('theme-light');
+        document.body.classList.remove('theme-light', 'light-theme', 'light-mode');
         document.body.classList.add('theme-dark');
         AppState.theme = 'dark';
         themeIcon.innerText = '☀️';
@@ -2620,35 +3077,95 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // 11. Gắn sự kiện Admin Dashboard (#view-admin)
-  const btnAdminSaveSchedule = document.getElementById('btnAdminSaveSchedule');
-  if (btnAdminSaveSchedule) btnAdminSaveSchedule.addEventListener('click', handleAdminSaveSchedule);
+  // 11. Gắn sự kiện Dropdowns Chọn Giải Đấu & Vòng Đấu (Tab 1, Tab 2, Tab 3)
+  const guideTourSel = document.getElementById('guideTournamentSelect');
+  if (guideTourSel) {
+    guideTourSel.addEventListener('change', () => {
+      TournamentClientState.selectedTournamentId = guideTourSel.value;
+      syncSelectedTournamentDetails();
+      populateTournamentDropdowns();
+      updateTournamentUI();
+      fetchLeaderboard();
+    });
+  }
 
-  const btnAdminToggleReg = document.getElementById('btnAdminToggleReg');
-  if (btnAdminToggleReg) btnAdminToggleReg.addEventListener('click', handleAdminToggleReg);
+  const submitTourSel = document.getElementById('submitTournamentSelect');
+  if (submitTourSel) {
+    submitTourSel.addEventListener('change', () => {
+      TournamentClientState.selectedTournamentId = submitTourSel.value;
+      syncSelectedTournamentDetails();
+      populateTournamentDropdowns();
+      updateTournamentUI();
+    });
+  }
 
-  const btnAdminStartNow = document.getElementById('btnAdminStartNow');
-  if (btnAdminStartNow) btnAdminStartNow.addEventListener('click', handleAdminStartNow);
+  const lbTourSel = document.getElementById('lbTournamentSelect');
+  if (lbTourSel) {
+    lbTourSel.addEventListener('change', () => {
+      TournamentClientState.selectedTournamentId = lbTourSel.value;
+      syncSelectedTournamentDetails();
+      populateTournamentDropdowns();
+      updateTournamentUI();
+      fetchLeaderboard();
+    });
+  }
 
-  const btnAdminRunTournament = document.getElementById('btnAdminRunTournament');
-  if (btnAdminRunTournament) btnAdminRunTournament.addEventListener('click', handleAdminRunTournament);
+  const lbStageSel = document.getElementById('lbStageSelect');
+  if (lbStageSel) {
+    lbStageSel.addEventListener('change', () => {
+      TournamentClientState.selectedStageIndex = Number(lbStageSel.value) || 1;
+      fetchLeaderboard();
+    });
+  }
 
-  const btnAdminAddPrizeRow = document.getElementById('btnAdminAddPrizeRow');
-  if (btnAdminAddPrizeRow) btnAdminAddPrizeRow.addEventListener('click', () => addAdminPrizeRow());
+  // 12. Gắn sự kiện Admin Multi-Stage Dashboard (#view-admin)
+  const btnAdminRefreshTournaments = document.getElementById('btnAdminRefreshTournaments');
+  if (btnAdminRefreshTournaments) {
+    btnAdminRefreshTournaments.addEventListener('click', () => {
+      fetchAdminAllTournaments();
+      fetchTournamentsList();
+    });
+  }
 
-  const btnAdminSavePrizes = document.getElementById('btnAdminSavePrizes');
-  if (btnAdminSavePrizes) btnAdminSavePrizes.addEventListener('click', handleAdminSavePrizes);
+  const newTourStagesCount = document.getElementById('newTourStagesCount');
+  if (newTourStagesCount) {
+    newTourStagesCount.addEventListener('change', () => {
+      renderStagesConfig(newTourStagesCount.value);
+    });
+  }
 
-  const btnAdminToggleAnnounce = document.getElementById('btnAdminToggleAnnounce');
-  if (btnAdminToggleAnnounce) btnAdminToggleAnnounce.addEventListener('click', handleAdminToggleAnnounce);
+  const btnAdminAddPrizeRowNewTour = document.getElementById('btnAdminAddPrizeRowNewTour');
+  if (btnAdminAddPrizeRowNewTour) {
+    btnAdminAddPrizeRowNewTour.addEventListener('click', () => addNewTourPrizeRow());
+  }
 
-  // 12. Khởi tạo xác thực, cấu hình giải đấu và SSE Stream thời gian thực
+  const createTournamentForm = document.getElementById('createTournamentForm');
+  if (createTournamentForm) {
+    createTournamentForm.addEventListener('submit', handleCreateTournamentSubmit);
+  }
+
+  const btnAdminToggleAutoQueue = document.getElementById('btnAdminToggleAutoQueue');
+  if (btnAdminToggleAutoQueue) {
+    btnAdminToggleAutoQueue.addEventListener('click', handleAdminToggleAutoQueue);
+  }
+
+  const btnAdminTriggerAutoQueue = document.getElementById('btnAdminTriggerAutoQueue');
+  if (btnAdminTriggerAutoQueue) {
+    btnAdminTriggerAutoQueue.addEventListener('click', handleAdminTriggerAutoQueue);
+  }
+
+  // Khởi tạo các cấu hình mặc định cho Form tạo giải đấu mới
+  renderStagesConfig(3);
+  renderDefaultNewTourPrizes();
+
+  // 13. Khởi tạo xác thực, cấu hình giải đấu và SSE Stream thời gian thực
   initAuth();
   fetchTournamentStatus();
+  fetchAdminAutoQueueStatus();
   startCountdownTimer();
   setupSSE();
 
-  // 13. Bắt đầu polling Live Leaderboard mỗi 2 giây
+  // 14. Bắt đầu polling Live Leaderboard mỗi 2 giây
   fetchLeaderboard();
   AppState.pollingInterval = setInterval(fetchLeaderboard, 2000);
 });

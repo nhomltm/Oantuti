@@ -138,11 +138,28 @@ export function playMatch(botRedConfig, botBlueConfig, options = {}) {
   }
 
   // Kết quả cuối cùng
-  const winner = state.winner; // 'RED' | 'BLUE' | 'DRAW'
+  let winner = state.winner; // 'RED' | 'BLUE' | 'DRAW'
+  if (!winner) {
+    const counts = countPieces(state.grid);
+    if (counts[PLAYER.RED] > counts[PLAYER.BLUE]) {
+      winner = PLAYER.RED;
+      endReason = endReason || `Turn limit reached: RED has more pieces (${counts[PLAYER.RED]} vs ${counts[PLAYER.BLUE]})`;
+    } else if (counts[PLAYER.BLUE] > counts[PLAYER.RED]) {
+      winner = PLAYER.BLUE;
+      endReason = endReason || `Turn limit reached: BLUE has more pieces (${counts[PLAYER.BLUE]} vs ${counts[PLAYER.RED]})`;
+    } else {
+      winner = 'DRAW';
+      endReason = endReason || `Turn limit reached: Equal pieces (${counts[PLAYER.RED]} vs ${counts[PLAYER.BLUE]})`;
+    }
+  }
+
   let winnerBotId = null;
   if (winner === PLAYER.RED) winnerBotId = botRed.id;
   else if (winner === PLAYER.BLUE) winnerBotId = botBlue.id;
-  else winnerBotId = 'DRAW';
+  else {
+    winner = 'DRAW';
+    winnerBotId = 'DRAW';
+  }
 
   return {
     id: matchId,
@@ -158,13 +175,11 @@ export function playMatch(botRedConfig, botBlueConfig, options = {}) {
 }
 
 /**
- * 2. CHẠY GIẢI ĐẤU VÒNG TRÒN: runTournament(botList, options)
+ * 2. CHẠY GIẢI ĐẤU VÒNG TRÒN 1 LƯỢT: runTournament(botList, options)
  * 
- * Thể thức Double Round-Robin:
- * Mỗi cặp (Bot i, Bot j) sẽ thi đấu đúng 2 trận:
- * - Trận 1: Bot i là RED, Bot j là BLUE
- * - Trận 2: Bot j là RED, Bot i là BLUE
- * Đảm bảo 100% sự công bằng giữa các màu cờ.
+ * Thể thức Single Round-Robin (C_n^2):
+ * Mỗi cặp (Bot i, Bot j) sẽ thi đấu đúng 1 trận duy nhất:
+ * Tổng số trận đấu: C_n^2 = n * (n - 1) / 2
  * 
  * @param {Array<Object>} botList - Danh sách các bot tham gia
  * @param {Object} options - { timeoutMs: 200, onMatchComplete: Function }
@@ -196,13 +211,12 @@ export function runTournament(botList, options = {}) {
 
   const n = normalizedBots.length;
 
-  // Ghép cặp Round-Robin 2 lượt (Lượt đi và lượt về)
+  // Ghép cặp Round-Robin 1 lượt duy nhất: C_n^2 = n * (n - 1) / 2 trận
   for (let i = 0; i < n; i++) {
-    for (let j = 0; j < n; j++) {
-      if (i === j) continue; // Không tự đấu với chính mình
-
-      const botRed = normalizedBots[i];
-      const botBlue = normalizedBots[j];
+    for (let j = i + 1; j < n; j++) {
+      const isAlt = (i + j) % 2 === 0;
+      const botRed = isAlt ? normalizedBots[i] : normalizedBots[j];
+      const botBlue = isAlt ? normalizedBots[j] : normalizedBots[i];
 
       // Đấu trận
       const matchResult = playMatch(botRed, botBlue, options);
@@ -219,20 +233,20 @@ export function runTournament(botList, options = {}) {
 
       if (matchResult.winner === PLAYER.RED) {
         redStat.wins++;
-        redStat.score += SCORING.WIN;
+        redStat.score += SCORING.WIN; // 3
         blueStat.losses++;
-        blueStat.score += SCORING.LOSS;
+        blueStat.score += SCORING.LOSS; // 0
       } else if (matchResult.winner === PLAYER.BLUE) {
         blueStat.wins++;
-        blueStat.score += SCORING.WIN;
+        blueStat.score += SCORING.WIN; // 3
         redStat.losses++;
-        redStat.score += SCORING.LOSS;
+        redStat.score += SCORING.LOSS; // 0
       } else {
-        // DRAW
+        // DRAW (Hòa: mỗi bên 1 điểm và cộng 1 lượt hòa)
         redStat.draws++;
-        redStat.score += SCORING.DRAW;
+        redStat.score += SCORING.DRAW; // 1
         blueStat.draws++;
-        blueStat.score += SCORING.DRAW;
+        blueStat.score += SCORING.DRAW; // 1
       }
 
       if (typeof options.onMatchComplete === 'function') {

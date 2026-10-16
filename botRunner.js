@@ -358,6 +358,10 @@ return bot(gameState);
 
 // Tên bí danh để tương thích hoàn toàn
 export const STRIKER_BOT_CODE = GUARDIAN_AND_STRIKER_BOT_CODE;
+export const RandomBot = RANDOM_BOT_CODE;
+export const HunterBot = HUNTER_BOT_CODE;
+export const GuardianAndStrikerBot = GUARDIAN_AND_STRIKER_BOT_CODE;
+export const RusherBot = RUSHER_BOT_CODE;
 
 /**
  * 100% DANH SÁCH BOT MẪU CÓ SẴN (Người chơi giả / Sample Bots trong file hệ thống)
